@@ -1,2 +1,4 @@
 src/ui/assets
 node_modules
+# Kept byte-identical to tasksbaby viewer/timeline.mjs so it can be re-synced by copying
+src/ui/script/scriptTimeline.js
