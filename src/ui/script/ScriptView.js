@@ -6,7 +6,10 @@ const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const FONT_SCALES = [0.7, 0.85, 1, 1.25, 1.5, 1.75];
 const TICK_MS = 200;
 // Where the line being read sits, as a fraction of the prompter's height.
-const READING_LINE = 0.35;
+// The user drags it; these bound the drag so the line stays on screen.
+const DEFAULT_READING_LINE = 0.35;
+const MIN_READING_LINE = 0.08;
+const MAX_READING_LINE = 0.85;
 const DASH = '—';
 
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
@@ -319,24 +322,56 @@ export class ScriptView extends LitElement {
             flex: 1;
             min-height: 0;
             overflow: hidden;
-            -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18%, #000 72%, transparent 100%);
-            mask-image: linear-gradient(to bottom, transparent 0, #000 18%, #000 72%, transparent 100%);
+            /* The fades follow the reading line so the line being read is never faded. */
+            -webkit-mask-image: linear-gradient(
+                to bottom,
+                transparent 0,
+                #000 calc(var(--reading-line) * 0.6),
+                #000 max(72%, calc(var(--reading-line) + 15%)),
+                transparent 100%
+            );
+            mask-image: linear-gradient(
+                to bottom,
+                transparent 0,
+                #000 calc(var(--reading-line) * 0.6),
+                #000 max(72%, calc(var(--reading-line) + 15%)),
+                transparent 100%
+            );
         }
 
+        /* A 14px grab strip centred on the line; drag it to move where you read. */
         .reading-line {
             position: absolute;
             left: 0;
             right: 0;
-            top: 35%; /* READING_LINE */
+            top: var(--reading-line);
+            height: 14px;
+            transform: translateY(-50%);
+            cursor: ns-resize;
+            touch-action: none;
+        }
+
+        .reading-line::after {
+            content: '';
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 50%;
             border-top: 1px dashed rgba(0, 122, 255, 0.45);
-            pointer-events: none;
+            transition: border-color 0.15s ease;
+        }
+
+        .reading-line:hover::after,
+        .reading-line.dragging::after {
+            border-top: 1px solid rgba(0, 122, 255, 0.9);
         }
 
         .reading-line::before {
             content: '';
             position: absolute;
             left: 4px;
-            top: -5px;
+            top: 50%;
+            transform: translateY(-50%);
             border: 5px solid transparent;
             border-left: 7px solid #007aff;
         }
@@ -350,7 +385,7 @@ export class ScriptView extends LitElement {
         .script-text {
             list-style: none;
             margin: 0;
-            padding: 40vh 22px 70vh;
+            padding: 95vh 22px 95vh;
         }
 
         .line {
@@ -435,6 +470,7 @@ export class ScriptView extends LitElement {
         this.text = '';
         this.wpm = DEFAULT_WPM;
         this.fontScale = 1;
+        this.readingLine = DEFAULT_READING_LINE;
         this.speed = 1;
         this.parsed = null;
         this.flat = [];
@@ -475,6 +511,7 @@ export class ScriptView extends LitElement {
                 this.text = saved.text;
                 if (Number(saved.wpm) > 0) this.wpm = Number(saved.wpm);
                 if (FONT_SCALES.includes(Number(saved.fontScale))) this.fontScale = Number(saved.fontScale);
+                if (Number(saved.readingLine) > 0) this.readingLine = clamp(Number(saved.readingLine), MIN_READING_LINE, MAX_READING_LINE);
             }
         } catch (e) {
             // storage unavailable or corrupt; start empty
@@ -483,7 +520,16 @@ export class ScriptView extends LitElement {
 
     _writeSaved() {
         try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({ name: this.name, text: this.text, wpm: this.wpm, fontScale: this.fontScale }));
+            localStorage.setItem(
+                STORAGE_KEY,
+                JSON.stringify({
+                    name: this.name,
+                    text: this.text,
+                    wpm: this.wpm,
+                    fontScale: this.fontScale,
+                    readingLine: this.readingLine,
+                })
+            );
         } catch (e) {
             // ignore quota/storage errors; the script still plays this session
         }
@@ -717,7 +763,7 @@ export class ScriptView extends LitElement {
         const frame = () => {
             const scroll = this.shadowRoot && this.shadowRoot.querySelector('.scroll');
             if (scroll) {
-                const top = this._yAt(this._liveTime(), this._anchors()) - scroll.clientHeight * READING_LINE;
+                const top = this._yAt(this._liveTime(), this._anchors()) - scroll.clientHeight * this.readingLine;
                 if (Math.abs(scroll.scrollTop - top) > 0.5) scroll.scrollTop = top;
             }
             this._raf = requestAnimationFrame(frame);
@@ -728,6 +774,35 @@ export class ScriptView extends LitElement {
     _stopScroller() {
         if (this._raf) cancelAnimationFrame(this._raf);
         this._raf = 0;
+    }
+
+    // ── Moving the reading line ──
+
+    _startLineDrag(e) {
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        this._lineDragging = true;
+        this._refresh();
+    }
+
+    _dragLine(e) {
+        if (!this._lineDragging) return;
+        const rect = this.shadowRoot.querySelector('.prompter').getBoundingClientRect();
+        this.readingLine = clamp((e.clientY - rect.top) / rect.height, MIN_READING_LINE, MAX_READING_LINE);
+        this._refresh();
+    }
+
+    _endLineDrag() {
+        if (!this._lineDragging) return;
+        this._lineDragging = false;
+        this._writeSaved();
+        this._refresh();
+    }
+
+    _resetLine() {
+        this.readingLine = DEFAULT_READING_LINE;
+        this._writeSaved();
+        this._refresh();
     }
 
     _handleWheel(e) {
@@ -825,7 +900,10 @@ export class ScriptView extends LitElement {
                                   <button class="btn primary" ?disabled=${!this.total} @click=${() => this._show('player')}>Play on screen</button>
                                   <button class="btn" @click=${() => this._clear()}>Clear</button>
                               </div>
-                              <div class="note">In the player: Space play/pause · ←/→ beat · Shift+←/→ 10s · scroll to scrub · +/− text size</div>
+                              <div class="note">
+                                  In the player: Space play/pause · ←/→ beat · Shift+←/→ 10s · scroll to scrub · +/− text size · drag the blue arrow
+                                  to move the reading line
+                              </div>
                           </div>
                       `
                     : ''}
@@ -889,7 +967,11 @@ export class ScriptView extends LitElement {
                 @input=${e => this.seekTo(e.target.value)}
                 aria-label="Seek within the script"
             />
-            <div class="prompter" style="--script-scale:${this.fontScale}" @wheel=${e => this._handleWheel(e)}>
+            <div
+                class="prompter"
+                style="--script-scale:${this.fontScale};--reading-line:${this.readingLine * 100}%"
+                @wheel=${e => this._handleWheel(e)}
+            >
                 <div class="scroll">
                     <ol class="script-text">
                         ${this.flat.map((entry, i) => {
@@ -904,7 +986,15 @@ export class ScriptView extends LitElement {
                         })}
                     </ol>
                 </div>
-                <div class="reading-line"></div>
+                <div
+                    class="reading-line ${this._lineDragging ? 'dragging' : ''}"
+                    title="Drag to move the reading line · double-click to reset"
+                    @pointerdown=${e => this._startLineDrag(e)}
+                    @pointermove=${e => this._dragLine(e)}
+                    @pointerup=${() => this._endLineDrag()}
+                    @pointercancel=${() => this._endLineDrag()}
+                    @dblclick=${() => this._resetLine()}
+                ></div>
             </div>
         `;
     }
