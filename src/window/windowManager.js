@@ -587,10 +587,10 @@ function createFeatureWindows(header, namesToCreate) {
             case 'script': {
                 const script = new BrowserWindow({
                     ...commonChildOptions,
-                    width: 560,
-                    height: 440,
-                    minWidth: 380,
-                    minHeight: 220,
+                    width: 660,
+                    height: 540,
+                    minWidth: 440,
+                    minHeight: 320,
                     resizable: true,
                 });
                 script.setContentProtection(isContentProtectionOn);

@@ -1,27 +1,90 @@
 import { html, css, LitElement } from '../assets/lit-core-2.7.4.min.js';
-import { loadScript, flatTimeline, formatClock, DEFAULT_WPM } from './scriptTimeline.js';
+import {
+    loadScript,
+    flatTimeline,
+    formatClock,
+    sceneSlides,
+    scenePace,
+    sceneAutoAdvanceDue,
+    beatSteps,
+    beatCode,
+    beatExpects,
+    formatCode,
+    highlightCode,
+    shortFile,
+    DEFAULT_WPM,
+} from './scriptTimeline.js';
+
+/*
+ * The Script window: the tasksbaby rehearsal player's model in a Glass window.
+ *
+ *   time   — the SCRIPT position: where the current beat starts. Only a step,
+ *            a seek, a click, "Jump to now" or Auto moves it.
+ *   watch  — the STOPWATCH: real seconds since Start. It never moves the beat.
+ *
+ * Two views over that position: the Slide (one slide per scene, with Steps and
+ * Reference cards, as in the viewer) and Scroll (a teleprompter). Auto means
+ * "slides change when a scene's time is up" on the Slide and "the text follows
+ * the stopwatch" on Scroll. All script maths lives in scriptTimeline.js.
+ */
 
 const STORAGE_KEY = 'glass.script';
-const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const FONT_SCALES = [0.7, 0.85, 1, 1.25, 1.5, 1.75];
 const TICK_MS = 200;
-// Where the line being read sits, as a fraction of the prompter's height.
+// Where the line being read sits on Scroll, as a fraction of the prompter's height.
 // The user drags it; these bound the drag so the line stays on screen.
 const DEFAULT_READING_LINE = 0.35;
 const MIN_READING_LINE = 0.08;
 const MAX_READING_LINE = 0.85;
+// How quickly Scroll glides to a beat it was stepped to (fraction of the gap per frame).
+const GLIDE = 0.18;
 const DASH = '—';
 
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
-/** Script text with its `backticked` file names shown as code. */
+/** A script line's inline markdown as Lit parts: `code`, **bold** and *italic*. */
 const rich = text =>
-    String(text)
-        .split('`')
-        .map((part, i) => (i % 2 ? html`<code>${part}</code>` : part));
+    String(text == null ? '' : text)
+        .split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/)
+        .filter(Boolean)
+        .map(part => {
+            if (/^`[^`]+`$/.test(part)) return html`<code>${part.slice(1, -1)}</code>`;
+            if (/^\*\*[^*]+\*\*$/.test(part)) return html`<strong>${part.slice(2, -2)}</strong>`;
+            if (/^\*[^*\s][^*]*\*$/.test(part)) return html`<em>${part.slice(1, -1)}</em>`;
+            return part;
+        });
 
-/** Narration in one pair of quotes, whether or not the script already quoted it. */
-const quoted = text => rich(`“${String(text).replace(/^["“”]+|["“”]+$/g, '')}”`);
+/** Narration comes from the script already wrapped in quotes; wrap it exactly once. */
+const quote = text => {
+    const t = String(text == null ? '' : text).replace(/^[\s"“”]+|[\s"“”]+$/g, '');
+    return t ? `“${t}”` : '';
+};
+
+/** One-line form of a beat's text (backticks dropped). */
+const plain = text => String(text == null ? '' : text).replace(/`/g, '');
+
+/** Copy text, falling back to a hidden textarea where the async clipboard is unavailable. */
+async function copyText(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch (e) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        let ok = false;
+        try {
+            ok = document.execCommand('copy');
+        } catch (err) {
+            ok = false;
+        }
+        ta.remove();
+        return ok;
+    }
+}
 
 export class ScriptView extends LitElement {
     static styles = css`
@@ -45,6 +108,11 @@ export class ScriptView extends LitElement {
             box-sizing: border-box;
         }
 
+        code,
+        pre {
+            font-family: 'SF Mono', Menlo, Monaco, monospace;
+        }
+
         .script-container {
             display: flex;
             flex-direction: column;
@@ -58,17 +126,29 @@ export class ScriptView extends LitElement {
             overflow: hidden;
         }
 
-        /* ── Title bar (drag handle) ── */
+        /* ── Bars ── */
 
         .title-bar {
             display: flex;
             align-items: center;
-            gap: 8px;
-            height: 36px;
-            padding: 0 8px 0 14px;
+            gap: 6px;
+            min-height: 36px;
+            padding: 5px 8px 5px 12px;
             flex-shrink: 0;
+            flex-wrap: nowrap;
+            overflow: hidden;
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             -webkit-app-region: drag;
+        }
+
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 8px 5px 12px;
+            flex-shrink: 0;
+            flex-wrap: wrap;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         }
 
         .title {
@@ -83,8 +163,13 @@ export class ScriptView extends LitElement {
         }
 
         .title-bar button,
-        .title-bar select {
+        .title-bar select,
+        .title-bar input {
             -webkit-app-region: no-drag;
+        }
+
+        .spacer {
+            flex: 1;
         }
 
         .btn {
@@ -109,7 +194,7 @@ export class ScriptView extends LitElement {
         }
 
         .btn:disabled {
-            opacity: 0.4;
+            opacity: 0.35;
             cursor: default;
         }
 
@@ -122,36 +207,98 @@ export class ScriptView extends LitElement {
             background: #007aff;
         }
 
+        .btn.on {
+            background: rgba(0, 122, 255, 0.3);
+            border-color: rgba(0, 122, 255, 0.7);
+        }
+
         .btn.icon {
             width: 24px;
             padding: 0;
             font-size: 13px;
         }
 
-        select.mini {
-            height: 24px;
-            border-radius: 6px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            background: rgba(255, 255, 255, 0.07);
-            color: white;
-            font-size: 11px;
-            padding: 0 4px;
-            cursor: pointer;
+        .segmented {
+            display: inline-flex;
         }
 
-        select.mini option {
-            background: #1c1c1e;
+        .segmented .btn {
+            border-radius: 0;
+        }
+
+        .segmented .btn:first-child {
+            border-radius: 6px 0 0 6px;
+        }
+
+        .segmented .btn:last-child {
+            border-radius: 0 6px 6px 0;
+            border-left: none;
+        }
+
+        .clocks {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 10px;
+            margin: 0 4px;
+            white-space: nowrap;
+        }
+
+        .clock-cell {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 4px;
+        }
+
+        .clock-label {
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.45);
         }
 
         .clock {
             font-family: 'SF Mono', Menlo, Monaco, monospace;
-            font-size: 11px;
-            color: rgba(255, 255, 255, 0.9);
-            white-space: nowrap;
+            font-size: 12px;
+            color: white;
+            font-variant-numeric: tabular-nums;
         }
 
         .clock .total {
             color: rgba(255, 255, 255, 0.45);
+        }
+
+        .drift {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 1px 7px;
+            border-radius: 999px;
+            white-space: nowrap;
+        }
+
+        .drift.ok {
+            color: #30d158;
+            background: rgba(48, 209, 88, 0.14);
+        }
+
+        .drift.behind {
+            color: #ff9f0a;
+            background: rgba(255, 159, 10, 0.16);
+        }
+
+        .drift.ahead {
+            color: #64d2ff;
+            background: rgba(100, 210, 255, 0.14);
+        }
+
+        .seek {
+            display: block;
+            width: calc(100% - 24px);
+            margin: 6px 12px 2px;
+            height: 3px;
+            accent-color: #007aff;
+            cursor: pointer;
+            flex-shrink: 0;
         }
 
         /* ── Library (loading a script) ── */
@@ -174,7 +321,6 @@ export class ScriptView extends LitElement {
 
         .note code,
         .drop-zone code {
-            font-family: 'SF Mono', Menlo, Monaco, monospace;
             font-size: 10px;
             color: white;
         }
@@ -231,10 +377,6 @@ export class ScriptView extends LitElement {
             align-items: center;
             gap: 8px;
             flex-wrap: wrap;
-        }
-
-        .spacer {
-            flex: 1;
         }
 
         input.wpm {
@@ -307,15 +449,442 @@ export class ScriptView extends LitElement {
             min-width: 38px;
         }
 
-        /* ── Player (heads-up teleprompter) ── */
+        /* ── Slide ── */
 
-        .seek {
-            margin: 6px 14px 0;
-            height: 3px;
-            accent-color: #007aff;
-            cursor: pointer;
+        .stage {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            padding: 12px 18px 0;
+            position: relative;
+            font-size: calc(14px * var(--script-scale, 1));
+        }
+
+        .st-head {
             flex-shrink: 0;
         }
+
+        .st-title {
+            margin: 0;
+            font-size: 1.7em;
+            font-weight: 800;
+            line-height: 1.15;
+            overflow-wrap: anywhere;
+        }
+
+        .st-meta {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 4px 10px;
+            margin-top: 6px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.55);
+        }
+
+        .st-dots {
+            display: flex;
+            gap: 5px;
+        }
+
+        .st-dot {
+            width: 10px;
+            height: 10px;
+            padding: 0;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            background: transparent;
+            cursor: pointer;
+        }
+
+        .st-dot.done {
+            background: rgba(255, 255, 255, 0.35);
+            border-color: transparent;
+        }
+
+        .st-dot.current {
+            background: #007aff;
+            border-color: #007aff;
+            transform: scale(1.25);
+        }
+
+        .st-flag {
+            color: #ff6961;
+            font-weight: 700;
+        }
+
+        .st-body {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 0.8em;
+            padding: 10px 0;
+        }
+
+        .st-objective {
+            margin: 0;
+            font-size: 1.15em;
+            line-height: 1.3;
+            font-weight: 600;
+            color: #4da3ff;
+        }
+
+        .st-points {
+            margin: 0;
+            padding-left: 1.3em;
+            font-size: 1.2em;
+            line-height: 1.35;
+        }
+
+        .st-points li {
+            margin-bottom: 0.45em;
+        }
+
+        .st-points li::marker {
+            color: #4da3ff;
+            font-weight: 700;
+        }
+
+        .st-files {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 5px 7px;
+            font-size: 11px;
+        }
+
+        .st-chip {
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: rgba(0, 122, 255, 0.18);
+            color: #9ecbff;
+            font-family: 'SF Mono', Menlo, Monaco, monospace;
+            overflow-wrap: anywhere;
+        }
+
+        .st-chip.makes {
+            background: rgba(48, 209, 88, 0.18);
+            color: #30d158;
+            font-weight: 700;
+        }
+
+        .now {
+            flex-shrink: 0;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 8px 0 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .now-line {
+            margin: 0;
+            font-size: 11px;
+            line-height: 1.35;
+            color: rgba(255, 255, 255, 0.45);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .now-cur {
+            font-size: 1em;
+            font-weight: 600;
+            color: white;
+            white-space: normal;
+        }
+
+        .now-cur .scene {
+            color: #4da3ff;
+            font-weight: 700;
+        }
+
+        .now-quote {
+            font-size: 0.95em;
+            font-style: italic;
+            color: #9ecbff;
+            white-space: normal;
+        }
+
+        .st-foot {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding-bottom: 12px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        .st-bar {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .st-fill {
+            height: 100%;
+            background: rgba(255, 255, 255, 0.4);
+            transition: width 0.3s linear;
+        }
+
+        .st-bar.pace-ok .st-fill {
+            background: #30d158;
+        }
+
+        .st-bar.pace-warn .st-fill {
+            background: #ff9f0a;
+        }
+
+        .st-bar.pace-over .st-fill {
+            background: #ff453a;
+        }
+
+        /* ── Steps and Reference cards (replace the slide body) ── */
+
+        .card {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.7em;
+            padding: 10px 0 14px;
+        }
+
+        .card > * {
+            flex-shrink: 0;
+        }
+
+        .sp-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 4px 10px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.55);
+        }
+
+        .sp-kind {
+            padding: 1px 8px;
+            border-radius: 999px;
+            background: rgba(0, 122, 255, 0.2);
+            color: #9ecbff;
+            font-weight: 600;
+        }
+
+        .sp-kind.explanation,
+        .sp-kind.none {
+            background: rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .sp-action {
+            margin: 0;
+            font-size: 1.15em;
+            line-height: 1.3;
+            color: #4da3ff;
+        }
+
+        .sp-say {
+            margin: 0;
+            font-style: italic;
+            color: #9ecbff;
+            line-height: 1.4;
+        }
+
+        .sp-list {
+            margin: 0;
+            padding-left: 1.5em;
+            font-size: 1.05em;
+            line-height: 1.4;
+        }
+
+        .sp-list li {
+            margin-bottom: 0.5em;
+        }
+
+        .sp-list li::marker {
+            color: #4da3ff;
+            font-weight: 800;
+        }
+
+        .sp-list li.buried {
+            color: #ffb4a8;
+            background: rgba(255, 69, 58, 0.12);
+            border-radius: 6px;
+            padding: 2px 6px;
+        }
+
+        .sp-label {
+            margin: 0;
+            font-size: 11px;
+            color: #ff6961;
+            font-weight: 700;
+        }
+
+        .sp-check {
+            margin: 0;
+            padding: 6px 10px;
+            border-radius: 8px;
+            background: rgba(48, 209, 88, 0.14);
+            color: #30d158;
+            line-height: 1.4;
+        }
+
+        .sp-fix,
+        .sp-expect,
+        .sp-notes {
+            margin: 0;
+            padding-left: 1.1em;
+            line-height: 1.4;
+        }
+
+        .sp-fix {
+            color: #ffd60a;
+        }
+
+        .sp-expect {
+            color: #30d158;
+        }
+
+        .sp-notes {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.9em;
+        }
+
+        details.sp-why summary {
+            cursor: pointer;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        details.sp-why p {
+            margin: 6px 0 0;
+            line-height: 1.45;
+            color: rgba(255, 255, 255, 0.75);
+        }
+
+        .code-block {
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(0, 0, 0, 0.35);
+            overflow: hidden;
+        }
+
+        .code-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 6px 4px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.7);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .code-block pre {
+            margin: 0;
+            padding: 8px 10px;
+            font-size: 11px;
+            line-height: 1.5;
+            overflow-x: auto;
+            user-select: text;
+            cursor: text;
+        }
+
+        .tk-str {
+            color: #ffa07a;
+        }
+
+        .tk-num {
+            color: #b5e48c;
+        }
+
+        .tk-op {
+            color: #ff7ab2;
+        }
+
+        .tk-key {
+            color: #64d2ff;
+        }
+
+        .tk-kw {
+            color: #ff7ab2;
+            font-weight: 600;
+        }
+
+        .tk-com {
+            color: rgba(255, 255, 255, 0.4);
+            font-style: italic;
+        }
+
+        .ref-block h4 {
+            margin: 0 0 6px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.55);
+        }
+
+        .ref-block ol,
+        .ref-block dl {
+            margin: 0;
+            padding-left: 1.2em;
+            line-height: 1.45;
+        }
+
+        .ref-block dt {
+            font-weight: 700;
+            margin-top: 4px;
+        }
+
+        .ref-block dd {
+            margin: 0 0 4px;
+            color: rgba(255, 255, 255, 0.75);
+        }
+
+        table.facts {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.95em;
+        }
+
+        table.facts td {
+            padding: 4px 6px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            vertical-align: top;
+            line-height: 1.35;
+        }
+
+        table.facts td.value {
+            font-family: 'SF Mono', Menlo, Monaco, monospace;
+            font-weight: 700;
+            color: #30d158;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .card-nav {
+            display: flex;
+            gap: 6px;
+            padding: 0 0 10px;
+            flex-shrink: 0;
+        }
+
+        .card-nav .btn {
+            flex: 1;
+            height: 28px;
+        }
+
+        /* ── Scroll (teleprompter) ── */
 
         .prompter {
             position: relative;
@@ -428,7 +997,6 @@ export class ScriptView extends LitElement {
         }
 
         .line code {
-            font-family: 'SF Mono', Menlo, Monaco, monospace;
             font-size: 0.75em;
         }
 
@@ -443,6 +1011,7 @@ export class ScriptView extends LitElement {
 
         ::-webkit-scrollbar {
             width: 6px;
+            height: 6px;
         }
 
         ::-webkit-scrollbar-thumb {
@@ -471,14 +1040,24 @@ export class ScriptView extends LitElement {
         this.wpm = DEFAULT_WPM;
         this.fontScale = 1;
         this.readingLine = DEFAULT_READING_LINE;
-        this.speed = 1;
+        this.view = 'slide'; // 'slide' | 'scroll'
+        this.auto = true;
         this.parsed = null;
         this.flat = [];
+        this.slides = [];
         this.time = 0;
+        this.watch = 0;
         this.playing = false;
         this.lastStamp = 0;
+        this.sceneEnteredAt = 0;
+        this.beatStartedAt = 0;
+        this.stepsOpen = false;
+        this.refOpen = false;
+        this.copied = '';
         this._interval = null;
         this._raf = 0;
+        this._glideY = null;
+        this._lineDragging = false;
         this._dragging = false;
         this._draft = '';
         this._tick = 0;
@@ -512,6 +1091,8 @@ export class ScriptView extends LitElement {
                 if (Number(saved.wpm) > 0) this.wpm = Number(saved.wpm);
                 if (FONT_SCALES.includes(Number(saved.fontScale))) this.fontScale = Number(saved.fontScale);
                 if (Number(saved.readingLine) > 0) this.readingLine = clamp(Number(saved.readingLine), MIN_READING_LINE, MAX_READING_LINE);
+                if (saved.view === 'scroll') this.view = 'scroll';
+                if (saved.auto === false) this.auto = false;
             }
         } catch (e) {
             // storage unavailable or corrupt; start empty
@@ -528,6 +1109,8 @@ export class ScriptView extends LitElement {
                     wpm: this.wpm,
                     fontScale: this.fontScale,
                     readingLine: this.readingLine,
+                    view: this.view,
+                    auto: this.auto,
                 })
             );
         } catch (e) {
@@ -546,8 +1129,12 @@ export class ScriptView extends LitElement {
         this.text = text;
         this.parsed = text.trim() ? loadScript(text, { wpm: this.wpm }) : null;
         this.flat = this.parsed ? flatTimeline(this.parsed) : [];
+        this.slides = this.parsed ? sceneSlides(this.parsed) : [];
         this.time = 0;
+        this.stepsOpen = false;
+        this.refOpen = false;
         this.pause();
+        this.resetWatch();
     }
 
     _load(name, text) {
@@ -599,7 +1186,7 @@ export class ScriptView extends LitElement {
         if (window.api) window.api.scriptView.closeScriptWindow();
     }
 
-    // ── Playback ──
+    // ── Stopwatch ──
 
     _refresh() {
         this._tick++;
@@ -610,9 +1197,9 @@ export class ScriptView extends LitElement {
         this.lastStamp = Date.now();
         this._interval = setInterval(() => {
             const now = Date.now();
-            this.time = Math.min(this.total, this.time + ((now - this.lastStamp) / 1000) * this.speed);
+            this.watch += (now - this.lastStamp) / 1000; // the stopwatch only counts; it never selects a beat
             this.lastStamp = now;
-            if (this.time >= this.total) this.pause();
+            this._autoStep();
             this._refresh();
         }, TICK_MS);
     }
@@ -626,7 +1213,6 @@ export class ScriptView extends LitElement {
 
     play() {
         if (!this.total) return;
-        if (this.time >= this.total) this.time = 0;
         this.playing = true;
         this._startTicker();
         this._refresh();
@@ -643,25 +1229,149 @@ export class ScriptView extends LitElement {
         else this.play();
     }
 
-    seekTo(seconds) {
-        this.time = clamp(Number(seconds) || 0, 0, this.total);
+    /** Stopwatch back to 0:00. The beat stays where it is. */
+    resetWatch() {
+        this.watch = 0;
+        this.beatStartedAt = 0;
+        this.sceneEnteredAt = 0;
         this.lastStamp = Date.now();
         this._refresh();
     }
 
-    /** Jump to the previous/next beat on the flat timeline. */
-    stepBeat(direction) {
-        if (!this.flat.length) return;
-        const idx = this._currentFlatIndex();
-        if (direction > 0) {
-            const next = this.flat[idx + 1];
-            if (next) this.seekTo(next.atSeconds);
-        } else {
-            // Like a media player: first go back to the start of the current beat.
-            const cur = this.flat[idx];
-            if (cur && this.time - cur.atSeconds > 1.5) this.seekTo(cur.atSeconds);
-            else this.seekTo(idx > 0 ? this.flat[idx - 1].atSeconds : 0);
+    /** The stopwatch between ticks, so Scroll can move every frame. */
+    _liveWatch() {
+        if (!this.playing) return this.watch;
+        return this.watch + (Date.now() - this.lastStamp) / 1000;
+    }
+
+    /**
+     * Auto. On the Slide: once the stopwatch has spent the current scene's budget,
+     * step to the next scene (never while Steps or Reference is open, never past the
+     * last scene). On Scroll: the position follows the stopwatch.
+     */
+    _autoStep() {
+        if (!this.auto || !this.parsed) return;
+        if (this.view === 'scroll') {
+            const due = clamp(this.watch, 0, this.total);
+            if (due !== this.time) this.seekTo(due, { quiet: true });
+            return;
         }
+        if (this.stepsOpen || this.refOpen) return;
+        const scenes = this.parsed.scenes;
+        const at = scenes.indexOf(this._currentScene(this.time));
+        if (at < 0 || at >= scenes.length - 1) return;
+        const slide = this.slides[at];
+        if (slide && sceneAutoAdvanceDue({ budget: slide.seconds, enteredAt: this.sceneEnteredAt, watch: this.watch })) this.stepScene(1);
+    }
+
+    // ── Position ──
+
+    seekTo(seconds, { quiet = false } = {}) {
+        const beforeBeat = this._currentFlatIndex(this.time);
+        const beforeScene = this._currentScene(this.time);
+        this.time = clamp(Number(seconds) || 0, 0, this.total);
+        // On Scroll with Auto the text follows the stopwatch, so a deliberate move
+        // (a step, a click, the slider, the wheel) moves the stopwatch with it.
+        if (!quiet && this.auto && this.view === 'scroll') {
+            this.watch = this.time;
+            this.lastStamp = Date.now();
+        }
+        if (this._currentFlatIndex(this.time) !== beforeBeat) this.beatStartedAt = this.watch;
+        if (this._currentScene(this.time) !== beforeScene) this.sceneEnteredAt = this.watch;
+        if (!quiet) this._refresh();
+    }
+
+    /** Move the current beat by `delta`. The only thing besides Auto that advances the script. */
+    stepBeat(delta) {
+        if (!this.flat.length) return;
+        const at = this._currentFlatIndex(this.time);
+        const to = clamp((at < 0 ? (delta > 0 ? -1 : 0) : at) + delta, 0, this.flat.length - 1);
+        this.seekTo(this.flat[to].atSeconds);
+    }
+
+    /** The previous / next scene's planned start. */
+    stepScene(delta) {
+        const scenes = this.parsed ? this.parsed.scenes : [];
+        if (!scenes.length) return;
+        const at = Math.max(0, scenes.indexOf(this._currentScene(this.time)));
+        this.seekTo(scenes[clamp(at + delta, 0, scenes.length - 1)].startSeconds || 0);
+    }
+
+    /** "Jump to now": the scene (Slide) or beat (Scroll) the suggested times put you on. */
+    jumpToNow() {
+        const due = clamp(this.watch, 0, this.total);
+        if (this.view === 'slide') {
+            const sc = this._currentScene(due);
+            this.seekTo(sc ? sc.startSeconds || 0 : 0);
+        } else {
+            const idx = this._currentFlatIndex(due);
+            this.seekTo(idx >= 0 ? this.flat[idx].atSeconds : 0);
+        }
+    }
+
+    /** The last scene whose start the clock has reached. */
+    _currentScene(t) {
+        const scenes = this.parsed ? this.parsed.scenes : [];
+        let cur = null;
+        for (const sc of scenes) {
+            if (t >= sc.startSeconds) cur = sc;
+            else break;
+        }
+        return cur || scenes[0] || null;
+    }
+
+    /** Index into the flat timeline of the last beat the clock has passed, or -1. */
+    _currentFlatIndex(t) {
+        let idx = -1;
+        for (let i = 0; i < this.flat.length; i++) {
+            if (t >= this.flat[i].atSeconds) idx = i;
+            else break;
+        }
+        return idx;
+    }
+
+    /** The current beat inside a scene, or -1 before its first beat. */
+    _currentBeatIndex(sc, t) {
+        if (!sc) return -1;
+        let idx = -1;
+        for (let i = 0; i < sc.beats.length; i++) {
+            if (t >= sc.beats[i].atSeconds) idx = i;
+            else break;
+        }
+        return idx;
+    }
+
+    // ── Views and cards ──
+
+    setView(view) {
+        this.view = view === 'scroll' ? 'scroll' : 'slide';
+        if (this.view === 'scroll') {
+            this.stepsOpen = false;
+            this.refOpen = false;
+        }
+        this._glideY = null;
+        this._writeSaved();
+        this._refresh();
+    }
+
+    setAuto(on) {
+        this.auto = Boolean(on);
+        this._writeSaved();
+        this._refresh();
+    }
+
+    setStepsOpen(open) {
+        if (open) this.view = 'slide';
+        this.stepsOpen = Boolean(open) && Boolean(this.parsed);
+        if (this.stepsOpen) this.refOpen = false;
+        this._refresh();
+    }
+
+    setRefOpen(open) {
+        if (open) this.view = 'slide';
+        this.refOpen = Boolean(open) && Boolean(this.parsed);
+        if (this.refOpen) this.stepsOpen = false;
+        this._refresh();
     }
 
     _scaleFont(direction) {
@@ -671,62 +1381,67 @@ export class ScriptView extends LitElement {
         this._refresh();
     }
 
+    async _copy(label, text) {
+        if (await copyText(text)) {
+            this.copied = label;
+            this._refresh();
+            setTimeout(() => {
+                if (this.copied === label) {
+                    this.copied = '';
+                    this._refresh();
+                }
+            }, 1200);
+        }
+    }
+
+    /** The viewer's keys: Space, ←/→, ↑/↓ (Steps), S, R, Esc, N, A, O, +/−. */
     _handleKeydown(e) {
         if (this._mode !== 'player') return;
-        const tag = e.composedPath()[0] && e.composedPath()[0].tagName;
+        const target = e.composedPath()[0];
+        const tag = target && target.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
         if (e.metaKey || e.ctrlKey || e.altKey) return;
-        if (e.key === ' ') {
-            e.preventDefault();
+        const key = e.key;
+        const handled = () => e.preventDefault();
+        if (key === ' ' && tag !== 'BUTTON') {
+            handled();
             this.togglePlay();
-        } else if (e.key === 'ArrowRight') {
-            e.preventDefault();
-            if (e.shiftKey) this.seekTo(this.time + 10);
-            else this.stepBeat(1);
-        } else if (e.key === 'ArrowLeft') {
-            e.preventDefault();
-            if (e.shiftKey) this.seekTo(this.time - 10);
-            else this.stepBeat(-1);
-        } else if (e.key === 'Home') {
-            e.preventDefault();
-            this.seekTo(0);
-        } else if (e.key === '+' || e.key === '=') {
+        } else if (key === 'ArrowRight' || key === 'ArrowLeft') {
+            handled();
+            const d = key === 'ArrowRight' ? 1 : -1;
+            if (this.view === 'slide' && !this.stepsOpen) this.stepScene(d);
+            else this.stepBeat(d);
+        } else if ((key === 'ArrowDown' || key === 'ArrowUp') && (this.stepsOpen || this.view === 'scroll')) {
+            handled();
+            this.stepBeat(key === 'ArrowDown' ? 1 : -1);
+        } else if (key === 's' || key === 'S') {
+            handled();
+            this.setStepsOpen(!this.stepsOpen);
+        } else if (key === 'r' || key === 'R') {
+            handled();
+            this.setRefOpen(!this.refOpen);
+        } else if (key === 'Escape' && (this.stepsOpen || this.refOpen)) {
+            handled();
+            this.stepsOpen = false;
+            this.refOpen = false;
+            this._refresh();
+        } else if (key === 'n' || key === 'N') {
+            handled();
+            this.jumpToNow();
+        } else if (key === 'a' || key === 'A') {
+            handled();
+            this.setAuto(!this.auto);
+        } else if (key === 'o' || key === 'O') {
+            handled();
+            this.setView(this.view === 'slide' ? 'scroll' : 'slide');
+        } else if (key === '+' || key === '=') {
             this._scaleFont(1);
-        } else if (e.key === '-') {
+        } else if (key === '-') {
             this._scaleFont(-1);
         }
     }
 
-    // ── Position ──
-
-    /** The last scene whose start the clock has reached. */
-    _currentScene() {
-        const scenes = this.parsed ? this.parsed.scenes : [];
-        let cur = null;
-        for (const sc of scenes) {
-            if (this.time >= sc.startSeconds) cur = sc;
-            else break;
-        }
-        return cur || scenes[0] || null;
-    }
-
-    /** Index into the flat timeline of the last beat the clock has passed, or -1. */
-    _currentFlatIndex() {
-        let idx = -1;
-        for (let i = 0; i < this.flat.length; i++) {
-            if (this.time >= this.flat[i].atSeconds) idx = i;
-            else break;
-        }
-        return idx;
-    }
-
-    // ── Scrolling ──
-
-    /** The clock between ticks, so the scroll moves every frame rather than every tick. */
-    _liveTime() {
-        if (!this.playing) return this.time;
-        return Math.min(this.total, this.time + ((Date.now() - this.lastStamp) / 1000) * this.speed);
-    }
+    // ── Scroll: the teleprompter ──
 
     /** The scroll offset of every beat line, paired with the time it starts. */
     _anchors() {
@@ -746,7 +1461,7 @@ export class ScriptView extends LitElement {
         return anchors[anchors.length - 1].y;
     }
 
-    /** Scroll offset -> time, the inverse of `_yAt`, so a wheel scroll scrubs the clock. */
+    /** Scroll offset -> time, the inverse of `_yAt`, so a wheel scroll scrubs. */
     _timeAt(y, anchors) {
         if (!anchors.length) return 0;
         if (y <= anchors[0].y) return anchors[0].t;
@@ -758,13 +1473,28 @@ export class ScriptView extends LitElement {
         return anchors[anchors.length - 1].t;
     }
 
+    /**
+     * Where Scroll should be. With Auto the text follows the stopwatch continuously;
+     * without it, it sits on the current beat (glided to, so a step reads as motion).
+     */
+    _scrollTarget(anchors) {
+        if (this.auto) return this._yAt(clamp(this._liveWatch(), 0, this.total), anchors);
+        return this._yAt(this.time, anchors);
+    }
+
     _startScroller() {
         this._stopScroller();
         const frame = () => {
             const scroll = this.shadowRoot && this.shadowRoot.querySelector('.scroll');
-            if (scroll) {
-                const top = this._yAt(this._liveTime(), this._anchors()) - scroll.clientHeight * this.readingLine;
+            if (scroll && this.view === 'scroll') {
+                const anchors = this._anchors();
+                const target = this._scrollTarget(anchors);
+                if (this.auto || this._glideY === null) this._glideY = target;
+                else this._glideY += (target - this._glideY) * GLIDE;
+                const top = this._glideY - scroll.clientHeight * this.readingLine;
                 if (Math.abs(scroll.scrollTop - top) > 0.5) scroll.scrollTop = top;
+            } else {
+                this._glideY = null;
             }
             this._raf = requestAnimationFrame(frame);
         };
@@ -776,7 +1506,13 @@ export class ScriptView extends LitElement {
         this._raf = 0;
     }
 
-    // ── Moving the reading line ──
+    _handleWheel(e) {
+        e.preventDefault();
+        const anchors = this._anchors();
+        this.seekTo(this._timeAt(this._scrollTarget(anchors) + e.deltaY, anchors));
+    }
+
+    // Moving the reading line
 
     _startLineDrag(e) {
         e.preventDefault();
@@ -805,12 +1541,6 @@ export class ScriptView extends LitElement {
         this._refresh();
     }
 
-    _handleWheel(e) {
-        e.preventDefault();
-        const anchors = this._anchors();
-        this.seekTo(this._timeAt(this._yAt(this._liveTime(), anchors) + e.deltaY, anchors));
-    }
-
     // ── Render ──
 
     render() {
@@ -828,9 +1558,9 @@ export class ScriptView extends LitElement {
             </div>
             <div class="library">
                 <div class="note">
-                    Load a script to play on screen. A tasksbaby <code>play_by_play_*.md</code> runs on its own clock (scenes, beats and narration);
-                    any other text plays one paragraph at a time, timed by reading speed. Glass windows are hidden from screen capture, so it works as
-                    a private teleprompter.
+                    Load a script to rehearse on screen. A tasksbaby <code>play_by_play_*.md</code> plays like the tasksbaby viewer: a slide per
+                    scene, Steps and Reference cards, and a stopwatch against the script's suggested times. Any other text plays one paragraph at a
+                    time, timed by reading speed. Glass windows are hidden from screen capture.
                 </div>
                 <div
                     class="drop-zone ${this._dragging ? 'dragging' : ''}"
@@ -879,7 +1609,7 @@ export class ScriptView extends LitElement {
                                   <span class="pill">${parsed.mode === 'timed' ? 'play-by-play' : 'plain text'}</span>
                                   <span class="pill">${parsed.scenes.length} scene${parsed.scenes.length === 1 ? '' : 's'}</span>
                                   <span class="pill">${beats} beat${beats === 1 ? '' : 's'}</span>
-                                  <span class="pill">${formatClock(parsed.totalSeconds)} total</span>
+                                  <span class="pill">${formatClock(parsed.totalSeconds)} suggested</span>
                               </div>
                               ${parsed.warnings.map(w => html`<div class="warning">⚠ ${w}</div>`)}
                               <ol class="outline">
@@ -897,12 +1627,14 @@ export class ScriptView extends LitElement {
                                   )}
                               </ol>
                               <div class="row">
-                                  <button class="btn primary" ?disabled=${!this.total} @click=${() => this._show('player')}>Play on screen</button>
+                                  <button class="btn primary" ?disabled=${!this.total} @click=${() => this._show('player')}>
+                                      Rehearse on screen
+                                  </button>
                                   <button class="btn" @click=${() => this._clear()}>Clear</button>
                               </div>
                               <div class="note">
-                                  In the player: Space play/pause · ←/→ beat · Shift+←/→ 10s · scroll to scrub · +/− text size · drag the blue arrow
-                                  to move the reading line
+                                  Space start/pause · ←/→ scene (beat on Scroll and in Steps) · S steps · R reference · N jump to now · A auto · O
+                                  slide/scroll · +/− text size
                               </div>
                           </div>
                       `
@@ -924,38 +1656,63 @@ export class ScriptView extends LitElement {
             `;
         }
 
-        const t = this.time;
-        const sc = this._currentScene();
-        const idx = this._currentFlatIndex();
-        const timed = parsed.mode === 'timed';
-        const sceneLabel = n => {
-            const scene = parsed.scenes[n - 1];
-            if (!scene) return '';
-            return timed ? `Scene ${scene.n} — ${scene.app || DASH}` : scene.app;
-        };
-
-        let lastScene = null;
+        const slideView = this.view === 'slide';
+        const stepsWhat = slideView && !this.stepsOpen ? 'scene' : 'beat';
         return html`
             <div class="title-bar">
-                <button class="btn primary" @click=${() => this.togglePlay()}>${this.playing ? 'Pause' : 'Play'}</button>
-                <button class="btn icon" title="Previous beat (←)" @click=${() => this.stepBeat(-1)}>‹</button>
-                <button class="btn icon" title="Next beat (→)" @click=${() => this.stepBeat(1)}>›</button>
-                <button class="btn" title="Back to scene start" @click=${() => this.seekTo(sc ? sc.startSeconds : 0)}>Scene</button>
-                <span class="clock">${formatClock(t)} <span class="total">/ ${formatClock(this.total)}</span></span>
-                <span class="title"></span>
-                <select
-                    class="mini"
-                    title="Scroll speed"
-                    @change=${e => {
-                        this.speed = Number(e.target.value) || 1;
-                    }}
+                <button class="btn primary" title="Start or pause the stopwatch (Space). It never moves the beat." @click=${() => this.togglePlay()}>
+                    ${this.playing ? 'Pause' : 'Start'}
+                </button>
+                <button class="btn" title="Set the stopwatch back to 0:00 (the beat stays)" @click=${() => this.resetWatch()}>Reset</button>
+                <button
+                    class="btn icon"
+                    title="Previous ${stepsWhat} (←)"
+                    @click=${() => (stepsWhat === 'scene' ? this.stepScene(-1) : this.stepBeat(-1))}
                 >
-                    ${SPEEDS.map(s => html`<option value=${s} ?selected=${s === this.speed}>${s}×</option>`)}
-                </select>
-                <button class="btn icon" title="Smaller text (−)" @click=${() => this._scaleFont(-1)}>A</button>
-                <button class="btn icon" title="Larger text (+)" style="font-size:15px" @click=${() => this._scaleFont(1)}>A</button>
+                    ‹
+                </button>
+                <button class="btn icon" title="Next ${stepsWhat} (→)" @click=${() => (stepsWhat === 'scene' ? this.stepScene(1) : this.stepBeat(1))}>
+                    ›
+                </button>
+                ${this.renderClocks()}
+                <span class="title"></span>
                 <button class="btn" title="Load another script" @click=${() => this._show('library')}>Load</button>
                 <button class="btn icon" title="Close" @click=${() => this._close()}>×</button>
+            </div>
+            <div class="toolbar">
+                <span class="segmented">
+                    <button class="btn ${slideView ? 'on' : ''}" title="A slide per scene (O)" @click=${() => this.setView('slide')}>Slide</button>
+                    <button class="btn ${slideView ? '' : 'on'}" title="Scrolling teleprompter (O)" @click=${() => this.setView('scroll')}>
+                        Scroll
+                    </button>
+                </span>
+                <button
+                    class="btn ${this.stepsOpen ? 'on' : ''}"
+                    title="Click-through steps for the current beat (S)"
+                    @click=${() => this.setStepsOpen(!this.stepsOpen)}
+                >
+                    Steps
+                </button>
+                <button
+                    class="btn ${this.refOpen ? 'on' : ''}"
+                    title="Prep, definitions and facts (R)"
+                    @click=${() => this.setRefOpen(!this.refOpen)}
+                >
+                    Reference
+                </button>
+                <button
+                    class="btn ${this.auto ? 'on' : ''}"
+                    title=${slideView
+                        ? "Slides change by themselves when a scene's time is up (A)"
+                        : 'The text follows the stopwatch; off, it stays on the beat you step to (A)'}
+                    @click=${() => this.setAuto(!this.auto)}
+                >
+                    Auto: ${this.auto ? 'on' : 'off'}
+                </button>
+                ${this.renderDrift()}
+                <span class="spacer"></span>
+                <button class="btn icon" title="Smaller text (−)" @click=${() => this._scaleFont(-1)}>A</button>
+                <button class="btn icon" title="Larger text (+)" style="font-size:15px" @click=${() => this._scaleFont(1)}>A</button>
             </div>
             <input
                 class="seek"
@@ -963,10 +1720,321 @@ export class ScriptView extends LitElement {
                 min="0"
                 max=${this.total}
                 step="1"
-                .value=${String(Math.floor(t))}
+                .value=${String(Math.floor(this.time))}
                 @input=${e => this.seekTo(e.target.value)}
-                aria-label="Seek within the script"
+                aria-label="Move within the script"
             />
+            ${slideView ? this.renderSlide() : this.renderScroll()}
+        `;
+    }
+
+    /** Elapsed (the stopwatch), Should be (where the suggested times put you) and You're at (your beat). */
+    renderClocks() {
+        const due = clamp(this.watch, 0, this.total);
+        return html`
+            <span class="clocks">
+                <span class="clock-cell" title="Stopwatch: real time since Start"
+                    ><span class="clock-label">Elapsed</span><span class="clock elapsed">${formatClock(this.watch)}</span></span
+                >
+                <span class="clock-cell" title="Where the script's suggested times put you at this elapsed time"
+                    ><span class="clock-label">Should be</span><span class="clock due">${formatClock(due)}</span></span
+                >
+                <span class="clock-cell" title="The beat you are on (moved only by steps, clicks and seeks)"
+                    ><span class="clock-label">You're at</span
+                    ><span class="clock at">${formatClock(this.time)} <span class="total">/ ${formatClock(this.total)}</span></span></span
+                >
+            </span>
+        `;
+    }
+
+    /** How far your beat is from where the stopwatch says you should be, and "Jump to now". */
+    renderDrift() {
+        const due = clamp(this.watch, 0, this.total);
+        const dueIdx = this._currentFlatIndex(due);
+        const atIdx = this._currentFlatIndex(this.time);
+        const behind = dueIdx - atIdx;
+        let drift = '';
+        if (this.flat.length && (this.watch > 0 || this.playing)) {
+            if (behind === 0) drift = html`<span class="drift ok">on time</span>`;
+            else {
+                const n = Math.abs(behind);
+                drift = html`<span class="drift ${behind > 0 ? 'behind' : 'ahead'}">
+                    ${n} beat${n === 1 ? '' : 's'} ${behind > 0 ? 'behind' : 'ahead'} · ${formatClock(Math.abs(due - this.time))}
+                </span>`;
+            }
+        }
+        const nowDisabled = this.view === 'slide' ? this._currentScene(due) === this._currentScene(this.time) : !this.flat.length || behind === 0;
+        return html`
+            ${drift}
+            <button
+                class="btn"
+                title="Move to the ${this.view === 'slide' ? 'scene' : 'beat'} you should be on at this elapsed time (N)"
+                ?disabled=${nowDisabled}
+                @click=${() => this.jumpToNow()}
+            >
+                Now
+            </button>
+        `;
+    }
+
+    renderSlide() {
+        const parsed = this.parsed;
+        const scenes = parsed.scenes;
+        const sc = this._currentScene(this.time);
+        const at = scenes.indexOf(sc);
+        const slide = this.slides[at];
+        if (!sc || !slide) return html`<div class="empty">No scenes to show.</div>`;
+
+        const flagged = (sc.beats || []).filter(b => b.plain && beatSteps(b.plain).hidden.length).length;
+        const pace = scenePace({ budget: slide.seconds, plannedStart: slide.startSeconds, enteredAt: this.sceneEnteredAt, watch: this.watch });
+        const level = ['idle', 'ok', 'warn', 'over'].includes(pace.level) ? pace.level : 'idle';
+        const ratio = Number.isFinite(pace.ratio) ? clamp(pace.ratio, 0, 1) : 0;
+        const nextSlide = this.slides[at + 1];
+        const chip = (name, makes) =>
+            html`<span class="st-chip ${makes ? 'makes' : ''}" title=${name}>${shortFile(name, parsed.baseSlug) || name}</span>`;
+
+        let body;
+        if (this.stepsOpen) body = this.renderSteps(sc);
+        else if (this.refOpen) body = this.renderRef();
+        else
+            body = html`
+                <div class="st-body">
+                    ${slide.objective ? html`<p class="st-objective">${rich(slide.objective)}</p>` : ''}
+                    ${slide.points.length
+                        ? html`<ol class="st-points">
+                              ${slide.points.map(p => html`<li>${rich(p)}</li>`)}
+                          </ol>`
+                        : ''}
+                    ${slide.uses.length || slide.makes
+                        ? html`<div class="st-files">
+                              ${slide.uses.map(f => chip(f, false))} ${slide.uses.length && slide.makes ? html`<span>→</span>` : ''}
+                              ${slide.makes ? chip(slide.makes, true) : ''}
+                          </div>`
+                        : ''}
+                </div>
+                ${this.renderNow(sc)}
+            `;
+
+        return html`
+            <div class="stage" style="--script-scale:${this.fontScale}">
+                <div class="st-head">
+                    <h2 class="st-title">${parsed.mode === 'timed' ? `Scene ${slide.n} · ` : ''}${slide.app || DASH}</h2>
+                    <div class="st-meta">
+                        <span>${at + 1} / ${scenes.length}</span>
+                        <span class="st-dots">
+                            ${scenes.map(
+                                (s, i) =>
+                                    html`<button
+                                        class="st-dot ${i === at ? 'current' : i < at ? 'done' : ''}"
+                                        title="Scene ${s.n} — ${s.app || DASH}"
+                                        @click=${() => this.seekTo(s.startSeconds || 0)}
+                                    ></button>`
+                            )}
+                        </span>
+                        <span>suggested ${formatClock(slide.startSeconds)}–${formatClock(slide.endSeconds)}</span>
+                        ${flagged
+                            ? html`<span
+                                  class="st-flag"
+                                  title="Some beats in this scene hide a click inside their explanation — press S to see the steps"
+                                  >⚑ ${flagged}</span
+                              >`
+                            : ''}
+                    </div>
+                </div>
+                ${body}
+                <div class="st-foot">
+                    <span>${nextSlide && nextSlide.app ? `Next: ${nextSlide.app}` : 'Last scene'}</span>
+                    <span class="spacer"></span>
+                    <span title="Time spent in this scene against its suggested length"
+                        >${formatClock(pace.spent)} of ${formatClock(slide.seconds)} in this scene</span
+                    >
+                </div>
+                <div class="st-bar pace-${level}"><div class="st-fill" style="width:${ratio * 100}%"></div></div>
+            </div>
+        `;
+    }
+
+    /** The beat that just played, the one on now (with its narration), and the one coming. */
+    renderNow(sc) {
+        const i = this._currentFlatIndex(this.time);
+        const prev = i > 0 ? this.flat[i - 1] : null;
+        const cur = i >= 0 ? this.flat[i] : null;
+        const next = i + 1 < this.flat.length ? this.flat[i + 1] : i < 0 ? this.flat[0] : null;
+        const timed = this.parsed.mode === 'timed';
+        return html`
+            <div class="now">
+                ${prev ? html`<p class="now-line">↑ ${plain(prev.action)}</p>` : ''}
+                <p class="now-line now-cur">
+                    ${cur
+                        ? html`<span class="scene">${timed ? `Scene ${cur.sceneN}` : ''}</span> ${rich(cur.action || DASH)}`
+                        : sc && sc.beats[0]
+                          ? `Scene ${sc.n} starts — the first beat is at ${sc.beats[0].at}.`
+                          : 'Nothing is playing yet.'}
+                </p>
+                ${cur && cur.narration ? html`<p class="now-line now-quote">${quote(cur.narration)}</p>` : ''}
+                <p class="now-line">${next ? `↓ next (suggested ${formatClock(next.atSeconds)}) ${plain(next.action)}` : '↓ end of script'}</p>
+            </div>
+        `;
+    }
+
+    /** The Steps card: the current beat's "In plain words" as numbered steps, as the viewer builds it. */
+    renderSteps(sc) {
+        const beats = sc.beats || [];
+        const at = Math.max(0, this._currentBeatIndex(sc, this.time));
+        const beat = beats[at];
+        const flatIdx = this._currentFlatIndex(this.time);
+        const nav = html`
+            <div class="card-nav">
+                <button class="btn" title="Previous beat (↑)" ?disabled=${flatIdx <= 0} @click=${() => this.stepBeat(-1)}>↑ Previous beat</button>
+                <button class="btn" title="Next beat (↓)" ?disabled=${flatIdx >= this.flat.length - 1} @click=${() => this.stepBeat(1)}>
+                    Next beat ↓
+                </button>
+            </div>
+        `;
+        if (!beat)
+            return html`<div class="card"><h3 class="sp-action">Scene ${sc.n} has no beats.</h3></div>
+                ${nav}`;
+
+        const r = beatSteps(beat.plain);
+        const KIND = { steps: 'Steps', mixed: 'Steps + explanation', explanation: 'Explanation only', none: 'No plain words' };
+        // The click order: the steps plus the instructions buried in the explanation (⚑), in script order.
+        const plainText = String(beat.plain || '');
+        const ordered = [...r.steps.map(text => ({ text, buried: false })), ...r.hidden.map(text => ({ text, buried: true }))]
+            .map(x => ({ ...x, at: plainText.indexOf(x.text) }))
+            .sort((x, y) => x.at - y.at);
+        const steps = ordered.length ? ordered : [{ text: beat.action || DASH, buried: false }];
+        const checkText = r.check.join(' ');
+        const ownLead = /^(?:you know|when (?:it|this)|you should see|the screen should|it worked when|if it worked|success looks like)/i.test(
+            checkText
+        );
+        const code = beatCode(sc, beat);
+        const expects = beatExpects(sc, beat);
+
+        return html`
+            <div class="card">
+                <div class="sp-head">
+                    <span>Beat ${at + 1} / ${beats.length} · suggested ${beat.at}</span>
+                    <span class="sp-kind ${r.kind}">${KIND[r.kind] || ''}</span>
+                </div>
+                <h3 class="sp-action">${rich(beat.action || DASH)}</h3>
+                ${beat.narration ? html`<p class="sp-say">${quote(beat.narration)}</p>` : ''}
+                <ol class="sp-list">
+                    ${steps.map(
+                        x =>
+                            html`<li
+                                class=${x.buried ? 'buried' : ''}
+                                title=${x.buried ? 'This click was written inside the explanation, not as a step' : ''}
+                            >
+                                ${x.buried ? '⚑ ' : ''}${rich(x.text)}
+                            </li>`
+                    )}
+                </ol>
+                ${r.hidden.length
+                    ? html`<p class="sp-label">
+                          ⚑ = a click the script wrote inside its explanation, placed here in order. Check it before recording.
+                      </p>`
+                    : ''}
+                ${code.map(
+                    b => html`
+                        <div class="code-block">
+                            <div class="code-head">
+                                <span>Paste · ${b.label}</span>
+                                <button class="btn" @click=${() => this._copy(b.label, b.text)}>
+                                    ${this.copied === b.label ? 'Copied' : 'Copy'}
+                                </button>
+                            </div>
+                            <pre><code>${highlightCode(formatCode(b.text)).map(tok =>
+                                tok.t === 'text' || tok.t === 'punc' ? tok.v : html`<span class="tk-${tok.t}">${tok.v}</span>`
+                            )}</code></pre>
+                        </div>
+                    `
+                )}
+                ${checkText ? html`<p class="sp-check">${ownLead ? '✓ ' : '✓ You should see: '}${rich(checkText)}</p>` : ''}
+                ${r.fix.length
+                    ? html`<ul class="sp-fix">
+                          ${r.fix.map(f => html`<li>⚠ ${rich(f)}</li>`)}
+                      </ul>`
+                    : ''}
+                ${expects.length
+                    ? html`<ul class="sp-expect">
+                          ${expects.map(x => html`<li>✓ ${rich(x)}</li>`)}
+                      </ul>`
+                    : ''}
+                ${(sc.notes || []).length
+                    ? html`<ul class="sp-notes">
+                          ${sc.notes.map(n => html`<li>Operator note (not spoken): ${rich(n)}</li>`)}
+                      </ul>`
+                    : ''}
+                ${r.why.length
+                    ? html`<details class="sp-why">
+                          <summary>Why</summary>
+                          ${r.why.map(w => html`<p>${rich(w)}</p>`)}
+                      </details>`
+                    : ''}
+            </div>
+            ${nav}
+        `;
+    }
+
+    /** The Reference card: the script's prep checklist, definitions and facts, verbatim. */
+    renderRef() {
+        const p = this.parsed;
+        const prep = p.prep || [];
+        const defs = p.definitions || [];
+        const facts = p.facts || [];
+        return html`
+            <div class="card">
+                <h3 class="sp-action">Reference</h3>
+                ${prep.length
+                    ? html`<div class="ref-block">
+                          <h4>Before you record</h4>
+                          <ol>
+                              ${prep.map(x => html`<li>${plain(x)}</li>`)}
+                          </ol>
+                      </div>`
+                    : ''}
+                ${defs.length
+                    ? html`<div class="ref-block">
+                          <h4>Definitions used on camera</h4>
+                          <dl>
+                              ${defs.map(
+                                  d =>
+                                      html`<dt>${d.term}</dt>
+                                          <dd>${plain(d.text)}</dd>`
+                              )}
+                          </dl>
+                      </div>`
+                    : ''}
+                ${facts.length
+                    ? html`<div class="ref-block">
+                          <h4>Facts — read these off screen</h4>
+                          <table class="facts">
+                              ${facts.map(
+                                  f =>
+                                      html`<tr title=${f.file}>
+                                          <td>${plain(f.fact)}</td>
+                                          <td class="value">${plain(f.value)}</td>
+                                      </tr>`
+                              )}
+                          </table>
+                      </div>`
+                    : ''}
+                ${prep.length || defs.length || facts.length ? '' : html`<p class="note">This script has no prep, definitions or facts sections.</p>`}
+            </div>
+        `;
+    }
+
+    renderScroll() {
+        const parsed = this.parsed;
+        const idx = this._currentFlatIndex(this.time);
+        const timed = parsed.mode === 'timed';
+        const sceneLabel = n => {
+            const scene = parsed.scenes[n - 1];
+            if (!scene) return '';
+            return timed ? `Scene ${scene.n} — ${scene.app || DASH}` : scene.app;
+        };
+        let lastScene = null;
+        return html`
             <div
                 class="prompter"
                 style="--script-scale:${this.fontScale};--reading-line:${this.readingLine * 100}%"
@@ -980,7 +2048,7 @@ export class ScriptView extends LitElement {
                             return html`
                                 <li class="line ${i === idx ? 'current' : i < idx ? 'past' : ''}" @click=${() => this.seekTo(entry.atSeconds)}>
                                     ${label ? html`<span class="scene-label">${label}</span>` : ''} ${rich(entry.action || DASH)}
-                                    ${entry.narration ? html`<div class="narration">${quoted(entry.narration)}</div>` : ''}
+                                    ${entry.narration ? html`<div class="narration">${quote(entry.narration)}</div>` : ''}
                                 </li>
                             `;
                         })}
