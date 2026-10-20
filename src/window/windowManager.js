@@ -96,6 +96,16 @@ const moveHeaderTo = (newX, newY) => {
     internalBridge.emit('window:moveHeaderTo', { newX, newY });
 };
 
+const toggleScriptWindow = () => {
+    const win = windowPool.get('script');
+    const visible = Boolean(win && !win.isDestroyed() && win.isVisible());
+    internalBridge.emit('window:requestVisibility', { name: 'script', visible: !visible });
+};
+
+const closeScriptWindow = () => {
+    internalBridge.emit('window:requestVisibility', { name: 'script', visible: false });
+};
+
 const adjustWindowHeight = (winName, targetHeight) => {
     internalBridge.emit('window:adjustWindowHeight', { winName, targetHeight });
 };
@@ -254,7 +264,7 @@ function changeAllWindowsVisibility(windowPool, targetVisibility) {
  * @param {Map<string, BrowserWindow>} windowPool
  * @param {WindowLayoutManager} layoutManager 
  * @param {SmoothMovementManager} movementManager
- * @param {'listen' | 'ask' | 'settings' | 'shortcut-settings'} name 
+ * @param {'listen' | 'ask' | 'settings' | 'shortcut-settings' | 'script'} name 
  * @param {boolean} shouldBeVisible 
  */
 async function handleWindowVisibilityRequest(windowPool, layoutManager, movementManager, name, shouldBeVisible) {
@@ -346,6 +356,23 @@ async function handleWindowVisibilityRequest(windowPool, layoutManager, movement
             }
             restoreClicks();
             win.hide();
+        }
+        return;
+    }
+
+    if (name === 'script') {
+        if (shouldBeVisible) {
+            // Open under the header the first time; after that it stays where the user put it.
+            if (!win.__placed) {
+                const bounds = layoutManager.calculateScriptWindowPosition();
+                if (bounds) win.setBounds(bounds);
+                win.__placed = true;
+            }
+            win.setOpacity(0);
+            win.show();
+            movementManager.fade(win, { to: 1 });
+        } else {
+            movementManager.fade(win, { to: 0, onComplete: () => win.hide() });
         }
         return;
     }
@@ -556,6 +583,41 @@ function createFeatureWindows(header, namesToCreate) {
                 break;
             }
 
+            // script (teleprompter): resizable, and the user can drag it anywhere
+            case 'script': {
+                const script = new BrowserWindow({
+                    ...commonChildOptions,
+                    width: 560,
+                    height: 440,
+                    minWidth: 380,
+                    minHeight: 220,
+                    resizable: true,
+                });
+                script.setContentProtection(isContentProtectionOn);
+                script.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+                if (process.platform === 'darwin') {
+                    script.setWindowButtonVisibility(false);
+                }
+                const scriptLoadOptions = { query: { view: 'script' } };
+                if (!shouldUseLiquidGlass) {
+                    script.loadFile(path.join(__dirname, '../ui/app/content.html'), scriptLoadOptions);
+                } else {
+                    scriptLoadOptions.query.glass = 'true';
+                    script.loadFile(path.join(__dirname, '../ui/app/content.html'), scriptLoadOptions);
+                    script.webContents.once('did-finish-load', () => {
+                        const viewId = liquidGlass.addView(script.getNativeWindowHandle());
+                        if (viewId !== -1) {
+                            liquidGlass.unstable_setVariant(viewId, liquidGlass.GlassMaterialVariant.bubbles);
+                        }
+                    });
+                }
+                windowPool.set('script', script);
+                if (!app.isPackaged) {
+                    script.webContents.openDevTools({ mode: 'detach' });
+                }
+                break;
+            }
+
             case 'shortcut-settings': {
                 const shortcutEditor = new BrowserWindow({
                     ...commonChildOptions,
@@ -605,11 +667,12 @@ function createFeatureWindows(header, namesToCreate) {
         createFeatureWindow('ask');
         createFeatureWindow('settings');
         createFeatureWindow('shortcut-settings');
+        createFeatureWindow('script');
     }
 }
 
 function destroyFeatureWindows() {
-    const featureWindows = ['listen','ask','settings','shortcut-settings'];
+    const featureWindows = ['listen','ask','settings','shortcut-settings','script'];
     if (settingsHideTimer) {
         clearTimeout(settingsHideTimer);
         settingsHideTimer = null;
@@ -716,7 +779,7 @@ function createWindows() {
     setupWindowController(windowPool, layoutManager, movementManager);
 
     if (currentHeaderState === 'main') {
-        createFeatureWindows(header, ['listen', 'ask', 'settings', 'shortcut-settings']);
+        createFeatureWindows(header, ['listen', 'ask', 'settings', 'shortcut-settings', 'script']);
     }
 
     header.setContentProtection(isContentProtectionOn);
@@ -806,4 +869,6 @@ module.exports = {
     getHeaderPosition,
     moveHeaderTo,
     adjustWindowHeight,
+    toggleScriptWindow,
+    closeScriptWindow,
 };

@@ -562,6 +562,18 @@ export class MainHeader extends LitElement {
         }
     }
 
+    async _handleScriptClick() {
+        if (this.wasJustDragged) return;
+
+        try {
+            if (window.api) {
+                await window.api.mainHeader.sendScriptButtonClick();
+            }
+        } catch (error) {
+            console.error('IPC invoke for script button failed:', error);
+        }
+    }
+
     async _handleToggleAllWindowsVisibility() {
         if (this.wasJustDragged) return;
 
@@ -648,6 +660,12 @@ export class MainHeader extends LitElement {
                     </div>
                     <div class="icon-container">
                         ${this.renderShortcut(this.shortcuts.nextStep)}
+                    </div>
+                </div>
+
+                <div class="header-actions" @click=${() => this._handleScriptClick()}>
+                    <div class="action-text">
+                        <div class="action-text-content">Script</div>
                     </div>
                 </div>
 

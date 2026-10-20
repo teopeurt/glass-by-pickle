@@ -94,6 +94,29 @@ class WindowLayoutManager {
     }
 
 
+    calculateScriptWindowPosition() {
+        const header = this.windowPool.get('header');
+        const script = this.windowPool.get('script');
+
+        if (!header || header.isDestroyed() || !script || script.isDestroyed()) {
+            return null;
+        }
+
+        const headerBounds = header.getBounds();
+        const scriptBounds = script.getBounds();
+        const display = getCurrentDisplay(header);
+        const { x: workAreaX, y: workAreaY, width: screenWidth, height: screenHeight } = display.workArea;
+
+        const PAD = 8;
+        const x = headerBounds.x + headerBounds.width / 2 - scriptBounds.width / 2;
+        const y = headerBounds.y + headerBounds.height + PAD;
+
+        const clampedX = Math.max(workAreaX + 10, Math.min(workAreaX + screenWidth - scriptBounds.width - 10, x));
+        const clampedY = Math.max(workAreaY + 10, Math.min(workAreaY + screenHeight - scriptBounds.height - 10, y));
+
+        return { x: Math.round(clampedX), y: Math.round(clampedY), width: scriptBounds.width, height: scriptBounds.height };
+    }
+
     calculateHeaderResize(header, { width, height }) {
         if (!header) return null;
         const currentBounds = header.getBounds();

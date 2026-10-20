@@ -116,6 +116,7 @@ contextBridge.exposeInMainWorld('api', {
     // invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
     sendListenButtonClick: (listenButtonText) => ipcRenderer.invoke('listen:changeSession', listenButtonText),
     sendAskButtonClick: () => ipcRenderer.invoke('ask:toggleAskButton'),
+    sendScriptButtonClick: () => ipcRenderer.invoke('script:toggleScriptWindow'),
     sendToggleAllWindowsVisibility: () => ipcRenderer.invoke('shortcut:toggleAllWindowsVisibility'),
     
     // Listeners
@@ -168,6 +169,12 @@ contextBridge.exposeInMainWorld('api', {
     removeOnScrollResponseUp: (callback) => ipcRenderer.removeListener('aks:scrollResponseUp', callback),
     onScrollResponseDown: (callback) => ipcRenderer.on('aks:scrollResponseDown', callback),
     removeOnScrollResponseDown: (callback) => ipcRenderer.removeListener('aks:scrollResponseDown', callback)
+  },
+
+  // src/ui/script/ScriptView.js
+  scriptView: {
+    // Window Management
+    closeScriptWindow: () => ipcRenderer.invoke('script:closeScriptWindow'),
   },
 
   // src/ui/listen/ListenView.js
