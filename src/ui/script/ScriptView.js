@@ -575,13 +575,19 @@ export class ScriptView extends LitElement {
             font-weight: 700;
         }
 
+        .st-body > * {
+            flex-shrink: 0;
+        }
+
         .st-body {
             flex: 1;
             min-height: 0;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
-            justify-content: center;
+            /* Centred when it fits; when a scene's text is taller than the space it
+               scrolls from the top instead of spilling up over the scene line. */
+            justify-content: safe center;
             gap: 0.8em;
             padding: 10px 0;
         }
@@ -721,6 +727,63 @@ export class ScriptView extends LitElement {
 
         .card > * {
             flex-shrink: 0;
+        }
+
+        /* The current beat's countdown: the bar empties as its suggested time is spent. */
+        .countdown {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            vertical-align: middle;
+            font-family: 'SF Mono', Menlo, Monaco, monospace;
+            font-size: 10px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .countdown-track {
+            width: 90px;
+            height: 5px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.12);
+            overflow: hidden;
+        }
+
+        .countdown-fill {
+            height: 100%;
+            border-radius: 3px;
+            background: #30d158;
+            transition: width 0.2s linear;
+        }
+
+        .countdown.idle .countdown-fill {
+            background: rgba(255, 255, 255, 0.35);
+        }
+
+        .countdown.warn {
+            color: #ff9f0a;
+        }
+
+        .countdown.warn .countdown-fill {
+            background: #ff9f0a;
+        }
+
+        .countdown.over {
+            color: #ff453a;
+        }
+
+        .countdown.over .countdown-track {
+            background: rgba(255, 69, 58, 0.35);
+        }
+
+        .now-meta {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
         }
 
         .sp-head {
@@ -1959,6 +2022,29 @@ export class ScriptView extends LitElement {
         `;
     }
 
+    /**
+     * The countdown for beat `i` of the flat timeline: a bar that empties as the
+     * stopwatch spends the beat's suggested time (its start to the next beat's
+     * start, or to its scene's end for the last beat), with the time left beside
+     * it. Orange in the last 15%, red with "+m:ss over" once the time is spent.
+     * Grey and full until the stopwatch is started.
+     */
+    renderCountdown(i) {
+        const entry = this.flat[i];
+        if (!entry) return '';
+        const budget = this._beatBudget(i) || Math.max(0, entry.endSeconds - entry.atSeconds);
+        if (!(budget > 0)) return '';
+        const idle = !this.playing && this.watch === 0;
+        const spent = idle ? 0 : Math.max(0, this._liveWatch() - this.beatStartedAt);
+        const left = budget - spent;
+        const level = idle ? 'idle' : left < 0 ? 'over' : left <= budget * 0.15 ? 'warn' : 'ok';
+        const fill = clamp(left / budget, 0, 1) * 100;
+        const label = left < 0 ? `+${formatClock(-left)} over` : `${formatClock(Math.ceil(left))} left`;
+        return html`<span class="countdown ${level}" title="Time left on this beat's suggested ${formatClock(budget)}"
+            ><span class="countdown-track"><span class="countdown-fill" style="display:block;width:${fill}%"></span></span>${label}</span
+        >`;
+    }
+
     /** The beat that just played, the one on now (with its narration), and the one coming. */
     renderNow(sc) {
         const i = this._currentFlatIndex(this.time);
@@ -1969,6 +2055,7 @@ export class ScriptView extends LitElement {
         return html`
             <div class="now">
                 ${prev ? html`<p class="now-line">↑ ${plain(prev.action)}</p>` : ''}
+                ${cur ? html`<div class="now-meta"><span>suggested ${formatClock(cur.atSeconds)}</span>${this.renderCountdown(i)}</div>` : ''}
                 <p class="now-line now-cur">
                     ${cur
                         ? html`<span class="scene">${timed ? `Scene ${cur.sceneN}` : ''}</span> ${rich(cur.action || DASH)}`
@@ -2019,6 +2106,7 @@ export class ScriptView extends LitElement {
             <div class="card">
                 <div class="sp-head">
                     <span>Beat ${at + 1} / ${beats.length} · suggested ${beat.at}</span>
+                    ${flatIdx >= 0 && this.flat[flatIdx].sceneN === sc.n && this.flat[flatIdx].beatIndex === at ? this.renderCountdown(flatIdx) : ''}
                     <span class="sp-kind ${r.kind}">${KIND[r.kind] || ''}</span>
                 </div>
                 <h3 class="sp-action">${rich(beat.action || DASH)}</h3>
