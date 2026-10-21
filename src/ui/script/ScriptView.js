@@ -1376,6 +1376,13 @@ export class ScriptView extends LitElement {
         return i >= 0 && i + 1 < this.flat.length ? this.flat[i + 1].atSeconds - this.flat[i].atSeconds : 0;
     }
 
+    /** The suggested length shown for a beat: its budget, or for the script's last beat the rest of its scene. */
+    _beatLength(i) {
+        const entry = this.flat[i];
+        if (!entry) return 0;
+        return this._beatBudget(i) || Math.max(0, entry.endSeconds - entry.atSeconds);
+    }
+
     /**
      * Auto, as in the viewer: once the stopwatch has spent the current BEAT's
      * suggested time since that beat was entered, step to the next beat. Works on
@@ -2032,7 +2039,7 @@ export class ScriptView extends LitElement {
     renderCountdown(i) {
         const entry = this.flat[i];
         if (!entry) return '';
-        const budget = this._beatBudget(i) || Math.max(0, entry.endSeconds - entry.atSeconds);
+        const budget = this._beatLength(i);
         if (!(budget > 0)) return '';
         const idle = !this.playing && this.watch === 0;
         const spent = idle ? 0 : Math.max(0, this._liveWatch() - this.beatStartedAt);
@@ -2055,7 +2062,7 @@ export class ScriptView extends LitElement {
         return html`
             <div class="now">
                 ${prev ? html`<p class="now-line">↑ ${plain(prev.action)}</p>` : ''}
-                ${cur ? html`<div class="now-meta"><span>suggested ${formatClock(cur.atSeconds)}</span>${this.renderCountdown(i)}</div>` : ''}
+                ${cur ? html`<div class="now-meta"><span>suggested ${formatClock(this._beatLength(i))}</span>${this.renderCountdown(i)}</div>` : ''}
                 <p class="now-line now-cur">
                     ${cur
                         ? html`<span class="scene">${timed ? `Scene ${cur.sceneN}` : ''}</span> ${rich(cur.action || DASH)}`
@@ -2064,7 +2071,9 @@ export class ScriptView extends LitElement {
                           : 'Nothing is playing yet.'}
                 </p>
                 ${cur && cur.narration ? html`<p class="now-line now-quote">${quote(cur.narration)}</p>` : ''}
-                <p class="now-line">${next ? `↓ next (suggested ${formatClock(next.atSeconds)}) ${plain(next.action)}` : '↓ end of script'}</p>
+                <p class="now-line">
+                    ${next ? `↓ next (suggested ${formatClock(this._beatLength(i + 1))}) ${plain(next.action)}` : '↓ end of script'}
+                </p>
             </div>
         `;
     }
@@ -2105,7 +2114,10 @@ export class ScriptView extends LitElement {
         return html`
             <div class="card">
                 <div class="sp-head">
-                    <span>Beat ${at + 1} / ${beats.length} · suggested ${beat.at}</span>
+                    <span
+                        >Beat ${at + 1} / ${beats.length} · suggested
+                        ${formatClock(this._beatLength(this.flat.findIndex(f => f.sceneN === sc.n && f.beatIndex === at)))}</span
+                    >
                     ${flatIdx >= 0 && this.flat[flatIdx].sceneN === sc.n && this.flat[flatIdx].beatIndex === at ? this.renderCountdown(flatIdx) : ''}
                     <span class="sp-kind ${r.kind}">${KIND[r.kind] || ''}</span>
                 </div>
