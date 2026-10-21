@@ -11,10 +11,16 @@ const displayNameMap = {
     moveDown: 'Move Down Window',
     scrollUp: 'Scroll Up Response',
     scrollDown: 'Scroll Down Response',
-    scriptPrevious: 'Script: Previous Slide / Beat',
-    scriptNext: 'Script: Next Slide / Beat',
-    scriptToggleSteps: 'Script: Show / Hide Steps',
+    scriptPrevious: 'Previous Slide / Beat',
+    scriptNext: 'Next Slide / Beat',
+    scriptToggleSteps: 'Show / Hide Steps',
   };
+
+// The editor lists shortcuts in groups; anything not named here falls under "Glass".
+const groups = [
+    { title: 'Script window', test: key => key.startsWith('script') },
+    { title: 'Glass', test: key => !key.startsWith('script') },
+];
 
 export class ShortcutSettingsView extends LitElement {
     static styles = css`
@@ -38,11 +44,17 @@ export class ShortcutSettingsView extends LitElement {
             border-bottom:1px solid rgba(255,255,255,.1);text-align:center;}
 
         .scroll-area{flex:1 1 auto;overflow-y:auto;margin:0 -4px;padding:4px;}
+        .scroll-area::-webkit-scrollbar{width:6px;}
+        .scroll-area::-webkit-scrollbar-thumb{background:rgba(255,255,255,.25);border-radius:3px;}
 
-        .shortcut-entry{display:flex;align-items:center;width:100%;gap:8px;
-            margin-bottom:8px;font-size:12px;padding:4px;}
-        .shortcut-name{flex:1 1 auto;color:rgba(255,255,255,.9);font-weight:300;
-            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .group-title{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+            color:rgba(255,255,255,.5);margin:6px 4px 2px;}
+        .group-title:first-child{margin-top:0;}
+
+        .shortcut-entry{display:flex;align-items:center;width:100%;gap:6px;
+            margin-bottom:2px;font-size:12px;padding:3px 4px;}
+        .shortcut-name{flex:1 1 auto;min-width:0;color:rgba(255,255,255,.9);font-weight:300;
+            line-height:1.2;overflow-wrap:anywhere;}
 
         .action-btn{background:none;border:none;color:rgba(0,122,255,.8);
             font-size:11px;padding:0 4px;cursor:pointer;transition:.15s;}
@@ -56,7 +68,7 @@ export class ShortcutSettingsView extends LitElement {
             outline:none;border-color:rgba(0,122,255,.6);
             box-shadow:0 0 0 1px rgba(0,122,255,.3);}
 
-        .feedback{font-size:10px;margin-top:2px;min-height:12px;}
+        .feedback{font-size:10px;margin:0 4px 4px;}
         .feedback.error{color:#ef4444;}
         .feedback.success{color:#22c55e;}
 
@@ -223,7 +235,11 @@ export class ShortcutSettingsView extends LitElement {
             <h1 class="title">Edit Shortcuts</h1>
     
             <div class="scroll-area">
-              ${Object.keys(this.shortcuts).map(key=>html`
+              ${groups.map(group => {
+                const keys = Object.keys(this.shortcuts).filter(group.test);
+                return keys.length ? html`
+                <div class="group-title">${group.title}</div>
+                ${keys.map(key=>html`
                 <div>
                   <div class="shortcut-entry">
                     <span class="shortcut-name">${this.formatShortcutName(key)}</span>
@@ -245,10 +261,11 @@ export class ShortcutSettingsView extends LitElement {
                   ${this.feedback[key] ? html`
                     <div class="feedback ${this.feedback[key].type}">
                       ${this.feedback[key].msg}
-                    </div>` : html`<div class="feedback"></div>`
+                    </div>` : ''
                   }
                 </div>
-              `)}
+              `)}` : '';
+              })}
             </div>
     
             <div class="actions">
