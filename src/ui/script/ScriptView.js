@@ -456,9 +456,69 @@ export class ScriptView extends LitElement {
             min-height: 0;
             display: flex;
             flex-direction: column;
-            padding: 12px 18px 0;
+            /* The side gutters hold the back / forward zones, so slide text never sits under them. */
+            padding: 12px 52px 0;
             position: relative;
             font-size: calc(14px * var(--script-scale, 1));
+        }
+
+        /* Back / forward, like a slideshow: the whole edge is the button, the chevron shows on hover. */
+        .st-zone {
+            position: absolute;
+            top: 0;
+            bottom: 34px;
+            width: 48px;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: none;
+            padding: 0;
+            background: transparent;
+            color: white;
+            font-size: 34px;
+            line-height: 1;
+            cursor: pointer;
+            opacity: 0.35;
+            transition:
+                opacity 0.15s ease,
+                background 0.15s ease;
+        }
+
+        .st-zone.prev {
+            left: 0;
+        }
+
+        .st-zone.next {
+            right: 0;
+        }
+
+        .st-zone:hover {
+            opacity: 1;
+            background: linear-gradient(to var(--edge), transparent, rgba(255, 255, 255, 0.08));
+        }
+
+        .st-zone.prev:hover {
+            --edge: left;
+        }
+
+        .st-zone.next:hover {
+            --edge: right;
+        }
+
+        .st-zone span {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.08);
+            padding-bottom: 4px;
+        }
+
+        .st-zone:hover span {
+            background: rgba(0, 122, 255, 0.85);
         }
 
         .st-head {
@@ -1817,6 +1877,7 @@ export class ScriptView extends LitElement {
 
         return html`
             <div class="stage" style="--script-scale:${this.fontScale}">
+                ${this.renderZones(at, scenes.length)}
                 <div class="st-head">
                     <h2 class="st-title">${parsed.mode === 'timed' ? `Scene ${slide.n} · ` : ''}${slide.app || DASH}</h2>
                     <div class="st-meta">
@@ -1851,6 +1912,30 @@ export class ScriptView extends LitElement {
                 </div>
                 <div class="st-bar pace-${level}"><div class="st-fill" style="width:${ratio * 100}%"></div></div>
             </div>
+        `;
+    }
+
+    /**
+     * The slide's back / forward zones on the left and right edges. They do what ←/→ do:
+     * move a scene on the slide, or a beat while the Steps card is open. Hidden at the ends.
+     */
+    renderZones(sceneAt, sceneCount) {
+        const byBeat = this.stepsOpen;
+        const at = byBeat ? this._currentFlatIndex(this.time) : sceneAt;
+        const last = byBeat ? this.flat.length - 1 : sceneCount - 1;
+        const what = byBeat ? 'beat' : 'scene';
+        const go = d => (byBeat ? this.stepBeat(d) : this.stepScene(d));
+        return html`
+            ${at > 0
+                ? html`<button class="st-zone prev" title="Previous ${what} (←)" aria-label="Previous ${what}" @click=${() => go(-1)}>
+                      <span>‹</span>
+                  </button>`
+                : ''}
+            ${at < last
+                ? html`<button class="st-zone next" title="Next ${what} (→)" aria-label="Next ${what}" @click=${() => go(1)}>
+                      <span>›</span>
+                  </button>`
+                : ''}
         `;
     }
 
