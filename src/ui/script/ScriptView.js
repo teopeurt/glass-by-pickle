@@ -5,7 +5,7 @@ import {
     formatClock,
     sceneSlides,
     scenePace,
-    sceneAutoAdvanceDue,
+    autoAdvanceDue,
     beatSteps,
     beatCode,
     beatExpects,
@@ -23,9 +23,10 @@ import {
  *   watch  — the STOPWATCH: real seconds since Start. It never moves the beat.
  *
  * Two views over that position: the Slide (one slide per scene, with Steps and
- * Reference cards, as in the viewer) and Scroll (a teleprompter). Auto means
- * "slides change when a scene's time is up" on the Slide and "the text follows
- * the stopwatch" on Scroll. All script maths lives in scriptTimeline.js.
+ * Reference cards, as in the viewer) and Scroll (a teleprompter). Auto, as in
+ * the viewer, moves to the next beat once the stopwatch has spent the current
+ * beat's suggested time (and so onto the next scene's slide after its last beat).
+ * All script maths lives in scriptTimeline.js.
  */
 
 const STORAGE_KEY = 'glass.script';
@@ -1307,24 +1308,23 @@ export class ScriptView extends LitElement {
         return this.watch + (Date.now() - this.lastStamp) / 1000;
     }
 
+    /** A beat's suggested length: from its start to the next beat's start (0 for the last beat). */
+    _beatBudget(i) {
+        return i >= 0 && i + 1 < this.flat.length ? this.flat[i + 1].atSeconds - this.flat[i].atSeconds : 0;
+    }
+
     /**
-     * Auto. On the Slide: once the stopwatch has spent the current scene's budget,
-     * step to the next scene (never while Steps or Reference is open, never past the
-     * last scene). On Scroll: the position follows the stopwatch.
+     * Auto, as in the viewer: once the stopwatch has spent the current BEAT's
+     * suggested time since that beat was entered, step to the next beat. Works on
+     * the Slide (and so moves to the next scene's slide after a scene's last beat)
+     * and on Scroll; Steps follows the beat. Holds off while Reference is open and
+     * on the very last beat. It reads the stopwatch, never writes it.
      */
     _autoStep() {
-        if (!this.auto || !this.parsed) return;
-        if (this.view === 'scroll') {
-            const due = clamp(this.watch, 0, this.total);
-            if (due !== this.time) this.seekTo(due, { quiet: true });
-            return;
-        }
-        if (this.stepsOpen || this.refOpen) return;
-        const scenes = this.parsed.scenes;
-        const at = scenes.indexOf(this._currentScene(this.time));
-        if (at < 0 || at >= scenes.length - 1) return;
-        const slide = this.slides[at];
-        if (slide && sceneAutoAdvanceDue({ budget: slide.seconds, enteredAt: this.sceneEnteredAt, watch: this.watch })) this.stepScene(1);
+        if (!this.auto || this.refOpen || !this.flat.length) return;
+        const at = this._currentFlatIndex(this.time);
+        if (at < 0 || at >= this.flat.length - 1) return;
+        if (autoAdvanceDue({ budget: this._beatBudget(at), enteredAt: this.beatStartedAt, watch: this.watch })) this.stepBeat(1);
     }
 
     // ── Position ──
@@ -1333,12 +1333,6 @@ export class ScriptView extends LitElement {
         const beforeBeat = this._currentFlatIndex(this.time);
         const beforeScene = this._currentScene(this.time);
         this.time = clamp(Number(seconds) || 0, 0, this.total);
-        // On Scroll with Auto the text follows the stopwatch, so a deliberate move
-        // (a step, a click, the slider, the wheel) moves the stopwatch with it.
-        if (!quiet && this.auto && this.view === 'scroll') {
-            this.watch = this.time;
-            this.lastStamp = Date.now();
-        }
         if (this._currentFlatIndex(this.time) !== beforeBeat) this.beatStartedAt = this.watch;
         if (this._currentScene(this.time) !== beforeScene) this.sceneEnteredAt = this.watch;
         if (!quiet) this._refresh();
@@ -1552,12 +1546,17 @@ export class ScriptView extends LitElement {
     }
 
     /**
-     * Where Scroll should be. With Auto the text follows the stopwatch continuously;
-     * without it, it sits on the current beat (glided to, so a step reads as motion).
+     * Where Scroll should be: on the current beat's line. With Auto the text also
+     * glides through the beat as its suggested time is spent, so it reaches the next
+     * line just as Auto moves on to that beat.
      */
     _scrollTarget(anchors) {
-        if (this.auto) return this._yAt(clamp(this._liveWatch(), 0, this.total), anchors);
-        return this._yAt(this.time, anchors);
+        const i = this._currentFlatIndex(this.time);
+        if (i < 0 || !anchors[i]) return anchors.length ? anchors[0].y : 0;
+        const budget = this._beatBudget(i);
+        if (!this.auto || !budget || !anchors[i + 1]) return anchors[i].y;
+        const frac = clamp((this._liveWatch() - this.beatStartedAt) / budget, 0, 1);
+        return anchors[i].y + frac * (anchors[i + 1].y - anchors[i].y);
     }
 
     _startScroller() {
@@ -1567,7 +1566,7 @@ export class ScriptView extends LitElement {
             if (scroll && this.view === 'scroll') {
                 const anchors = this._anchors();
                 const target = this._scrollTarget(anchors);
-                if (this.auto || this._glideY === null) this._glideY = target;
+                if (this._glideY === null) this._glideY = target;
                 else this._glideY += (target - this._glideY) * GLIDE;
                 const top = this._glideY - scroll.clientHeight * this.readingLine;
                 if (Math.abs(scroll.scrollTop - top) > 0.5) scroll.scrollTop = top;
@@ -1784,9 +1783,9 @@ export class ScriptView extends LitElement {
                 </button>
                 <button
                     class="btn ${this.auto ? 'on' : ''}"
-                    title=${slideView
-                        ? "Slides change by themselves when a scene's time is up (A)"
-                        : 'The text follows the stopwatch; off, it stays on the beat you step to (A)'}
+                    title=${this.auto
+                        ? "Beats change by themselves when a beat's time is up. Click to pause (A)"
+                        : 'Beats stay until you move them. Click to continue automatic changes (A)'}
                     @click=${() => this.setAuto(!this.auto)}
                 >
                     Auto: ${this.auto ? 'on' : 'off'}

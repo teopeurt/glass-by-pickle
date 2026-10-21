@@ -9,6 +9,7 @@ import {
     sceneSlides,
     scenePace,
     sceneAutoAdvanceDue,
+    autoAdvanceDue,
     shortFile,
 } from '../src/ui/script/scriptTimeline.js';
 
@@ -103,4 +104,8 @@ test('pace and auto-advance read only the stopwatch', () => {
     assert.equal(scenePace({ budget: 60, plannedStart: 0, enteredAt: 0, watch: 61 }).level, 'over');
     assert.equal(sceneAutoAdvanceDue({ budget: 60, enteredAt: 10, watch: 69 }), false);
     assert.equal(sceneAutoAdvanceDue({ budget: 60, enteredAt: 10, watch: 70 }), true);
+    // Auto moves a BEAT once its span is spent; the scene name is kept as an alias.
+    assert.equal(autoAdvanceDue({ budget: 2, enteredAt: 4, watch: 6 }), true);
+    assert.equal(autoAdvanceDue({ budget: 0, enteredAt: 0, watch: 99 }), false);
+    assert.equal(sceneAutoAdvanceDue, autoAdvanceDue);
 });

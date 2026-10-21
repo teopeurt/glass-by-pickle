@@ -752,17 +752,22 @@ export function scenePace({ budget, plannedStart, enteredAt, watch } = {}) {
 }
 
 /**
- * sceneAutoAdvanceDue({ budget, enteredAt, watch }) -> boolean
+ * autoAdvanceDue({ budget, enteredAt, watch }) -> boolean
  *
- * True once the stopwatch has spent a scene's whole budget since the scene was
- * entered (spent >= budget). A budget <= 0 never advances (nothing to wait for).
- * Pure: it only reads the stopwatch, so pausing the clock pauses the dwell.
- * Non-finite inputs count as 0.
+ * True once the stopwatch has spent a unit's whole budget since that unit was
+ * entered (spent >= budget). The unit is a BEAT for Auto in the player (budget =
+ * the beat's span, from its start to the next beat's start);
+ * `sceneAutoAdvanceDue` is the same test kept under its old name for a scene
+ * budget. A budget <= 0 never advances (nothing to wait for). Pure: it only reads
+ * the stopwatch, so pausing the clock pauses the dwell. Non-finite inputs count
+ * as 0.
  */
-export function sceneAutoAdvanceDue({ budget, enteredAt, watch } = {}) {
+export function autoAdvanceDue({ budget, enteredAt, watch } = {}) {
   const b = fin(budget);
   return b > 0 && Math.max(0, fin(watch) - fin(enteredAt)) >= b;
 }
+
+export const sceneAutoAdvanceDue = autoAdvanceDue;
 
 // -------------------------------------------------------------- beat steps
 // "In plain words" text -> a click-through card. Two dialects exist in the
