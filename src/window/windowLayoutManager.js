@@ -250,14 +250,36 @@ class WindowLayoutManager {
         const headerBounds = header.getBounds();
         const shortcutBounds = shortcutSettings.getBounds();
         const { workArea } = getCurrentDisplay(header);
-    
+
+        // Never under the header (it is always on top and would hide the editor's
+        // top rows): below it when there is room, else above it, else below it at
+        // whatever height fits (the list scrolls).
+        const PAD = 8;
+        const MARGIN = 10;
+        const PREFERRED_HEIGHT = 720; // the window's created height; a shrunk window grows back
+        const MIN_HEIGHT = 320;
+        const workBottom = workArea.y + workArea.height - MARGIN;
+        const below = workBottom - (headerBounds.y + headerBounds.height + PAD);
+        const above = headerBounds.y - PAD - (workArea.y + MARGIN);
+
+        let height = PREFERRED_HEIGHT;
+        let newY;
+        if (below >= height) {
+            newY = headerBounds.y + headerBounds.height + PAD;
+        } else if (above >= height) {
+            newY = headerBounds.y - PAD - height;
+        } else if (below >= above) {
+            height = Math.max(MIN_HEIGHT, below);
+            newY = headerBounds.y + headerBounds.height + PAD;
+        } else {
+            height = Math.max(MIN_HEIGHT, above);
+            newY = headerBounds.y - PAD - height;
+        }
+
         let newX = Math.round(headerBounds.x + (headerBounds.width / 2) - (shortcutBounds.width / 2));
-        let newY = Math.round(headerBounds.y);
-    
         newX = Math.max(workArea.x, Math.min(newX, workArea.x + workArea.width - shortcutBounds.width));
-        newY = Math.max(workArea.y, Math.min(newY, workArea.y + workArea.height - shortcutBounds.height));
-    
-        return { x: newX, y: newY, width: shortcutBounds.width, height: shortcutBounds.height };
+
+        return { x: newX, y: Math.round(newY), width: shortcutBounds.width, height: Math.round(height) };
     }
 
     calculateStepMovePosition(header, direction) {

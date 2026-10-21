@@ -14,6 +14,7 @@ const displayNameMap = {
     scriptPrevious: 'Previous Slide / Beat',
     scriptNext: 'Next Slide / Beat',
     scriptToggleSteps: 'Show / Hide Steps',
+    scriptStartPause: 'Start / Pause Stopwatch',
   };
 
 // The editor lists shortcuts in groups; anything not named here falls under "Glass".

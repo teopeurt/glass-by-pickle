@@ -1466,9 +1466,10 @@ export class ScriptView extends LitElement {
         if (shortcut === 'previous') this.go(-1);
         else if (shortcut === 'next') this.go(1);
         else if (shortcut === 'toggleSteps') this.setStepsOpen(!this.stepsOpen);
+        else if (shortcut === 'startPause') this.togglePlay();
     }
 
-    /** The viewer's keys: Space, ←/→, ↑/↓ (Steps), S, R, Esc, N, A, O, +/−. */
+    /** The viewer's keys, minus Space: ←/→, ↑/↓ (Steps), S, R, Esc, N, A, O, +/−. */
     _handleKeydown(e) {
         if (this._mode !== 'player') return;
         const target = e.composedPath()[0];
@@ -1477,10 +1478,8 @@ export class ScriptView extends LitElement {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         const key = e.key;
         const handled = () => e.preventDefault();
-        if (key === ' ' && tag !== 'BUTTON') {
-            handled();
-            this.togglePlay();
-        } else if (key === 'ArrowRight' || key === 'ArrowLeft') {
+        // Start / Pause is not on Space: it is the Script shortcut in Edit Shortcuts.
+        if (key === 'ArrowRight' || key === 'ArrowLeft') {
             handled();
             this.go(key === 'ArrowRight' ? 1 : -1);
         } else if ((key === 'ArrowDown' || key === 'ArrowUp') && (this.stepsOpen || this.view === 'scroll')) {
@@ -1710,12 +1709,12 @@ export class ScriptView extends LitElement {
                                   <button class="btn" @click=${() => this._clear()}>Clear</button>
                               </div>
                               <div class="note">
-                                  Space start/pause · ←/→ scene (beat on Scroll and in Steps) · S steps · R reference · N jump to now · A auto · O
-                                  slide/scroll · +/− text size
+                                  ←/→ scene (beat on Scroll and in Steps) · S steps · R reference · N jump to now · A auto · O slide/scroll · +/− text
+                                  size
                               </div>
                               <div class="note">
-                                  From any app while this window is open: ⌘⌥← previous · ⌘⌥→ next · ⌘⌥S steps (Ctrl+Alt on Windows). Change them in
-                                  Settings → Edit Shortcuts.
+                                  From any app while this window is open: ⌘⌥P start/pause · ⌘⌥← previous · ⌘⌥→ next · ⌘⌥S steps (Ctrl+Alt on Windows).
+                                  Change them in Settings → Edit Shortcuts.
                               </div>
                           </div>
                       `
@@ -1741,7 +1740,7 @@ export class ScriptView extends LitElement {
         const stepsWhat = slideView && !this.stepsOpen ? 'scene' : 'beat';
         return html`
             <div class="title-bar">
-                <button class="btn primary" title="Start or pause the stopwatch (Space). It never moves the beat." @click=${() => this.togglePlay()}>
+                <button class="btn primary" title="Start or pause the stopwatch (⌘⌥P). It never moves the beat." @click=${() => this.togglePlay()}>
                     ${this.playing ? 'Pause' : 'Start'}
                 </button>
                 <button class="btn" title="Set the stopwatch back to 0:00 (the beat stays)" @click=${() => this.resetWatch()}>Reset</button>

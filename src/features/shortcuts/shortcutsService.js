@@ -74,6 +74,7 @@ class ShortcutsService {
             scriptPrevious: isMac ? 'Cmd+Alt+Left' : 'Ctrl+Alt+Left',
             scriptNext: isMac ? 'Cmd+Alt+Right' : 'Ctrl+Alt+Right',
             scriptToggleSteps: isMac ? 'Cmd+Alt+S' : 'Ctrl+Alt+S',
+            scriptStartPause: isMac ? 'Cmd+Alt+P' : 'Ctrl+Alt+P',
         };
     }
 
@@ -285,6 +286,9 @@ class ShortcutsService {
                     break;
                 case 'scriptToggleSteps':
                     callback = () => sendToScript('toggleSteps');
+                    break;
+                case 'scriptStartPause':
+                    callback = () => sendToScript('startPause');
                     break;
             }
             

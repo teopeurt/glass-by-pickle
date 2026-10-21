@@ -338,7 +338,13 @@ async function handleWindowVisibilityRequest(windowPool, layoutManager, movement
         if (shouldBeVisible) {
             // layoutManager.positionShortcutSettingsWindow();
             const newBounds = layoutManager.calculateShortcutSettingsWindowPosition();
-            if (newBounds) win.setBounds(newBounds);
+            if (newBounds) {
+                // The editor is not user-resizable, but its height follows the screen space.
+                const wasResizable = win.isResizable();
+                if (!wasResizable) win.setResizable(true);
+                win.setBounds(newBounds);
+                if (!wasResizable) win.setResizable(false);
+            }
             
             if (process.platform === 'darwin') {
                 win.setAlwaysOnTop(true, 'screen-saver');
