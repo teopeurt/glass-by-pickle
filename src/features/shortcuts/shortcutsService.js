@@ -71,6 +71,9 @@ class ShortcutsService {
             nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
             scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
             scrollDown: isMac ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down',
+            scriptPrevious: isMac ? 'Cmd+Alt+Left' : 'Ctrl+Alt+Left',
+            scriptNext: isMac ? 'Cmd+Alt+Right' : 'Ctrl+Alt+Right',
+            scriptToggleSteps: isMac ? 'Cmd+Alt+S' : 'Ctrl+Alt+S',
         };
     }
 
@@ -92,7 +95,9 @@ class ShortcutsService {
         const defaults = this.getDefaultKeybinds();
         let needsUpdate = false;
         for (const action in defaults) {
-            if (!keybinds[action]) {
+            // Only a shortcut that was never saved gets its default; a blank one was
+            // disabled on purpose in the shortcut editor and must stay blank.
+            if (!Object.prototype.hasOwnProperty.call(keybinds, action)) {
                 keybinds[action] = defaults[action];
                 needsUpdate = true;
             }
@@ -201,9 +206,18 @@ class ShortcutsService {
             return;
         }
 
+        // The Script window's shortcuts are only held while it is open, so they never
+        // take those keys away from other apps the rest of the time.
+        const scriptWindow = this.windowPool.get('script');
+        const scriptOpen = Boolean(scriptWindow && !scriptWindow.isDestroyed() && scriptWindow.isVisible());
+        const sendToScript = (shortcut) => {
+            if (scriptOpen && !scriptWindow.isDestroyed()) scriptWindow.webContents.send('script:shortcut', shortcut);
+        };
+
         for (const action in keybinds) {
             const accelerator = keybinds[action];
             if (!accelerator) continue;
+            if (action.startsWith('script') && !scriptOpen) continue;
 
             let callback;
             switch(action) {
@@ -262,6 +276,15 @@ class ShortcutsService {
                     break;
                 case 'nextResponse':
                     callback = () => sendToRenderer('navigate-next-response');
+                    break;
+                case 'scriptPrevious':
+                    callback = () => sendToScript('previous');
+                    break;
+                case 'scriptNext':
+                    callback = () => sendToScript('next');
+                    break;
+                case 'scriptToggleSteps':
+                    callback = () => sendToScript('toggleSteps');
                     break;
             }
             

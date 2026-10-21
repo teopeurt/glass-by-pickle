@@ -175,6 +175,10 @@ contextBridge.exposeInMainWorld('api', {
   scriptView: {
     // Window Management
     closeScriptWindow: () => ipcRenderer.invoke('script:closeScriptWindow'),
+
+    // Listeners
+    onShortcut: (callback) => ipcRenderer.on('script:shortcut', callback),
+    removeOnShortcut: (callback) => ipcRenderer.removeListener('script:shortcut', callback),
   },
 
   // src/ui/listen/ListenView.js

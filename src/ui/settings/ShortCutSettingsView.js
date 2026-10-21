@@ -11,6 +11,9 @@ const displayNameMap = {
     moveDown: 'Move Down Window',
     scrollUp: 'Scroll Up Response',
     scrollDown: 'Scroll Down Response',
+    scriptPrevious: 'Script: Previous Slide / Beat',
+    scriptNext: 'Script: Next Slide / Beat',
+    scriptToggleSteps: 'Script: Show / Hide Steps',
   };
 
 export class ShortcutSettingsView extends LitElement {
@@ -148,13 +151,18 @@ export class ShortcutSettingsView extends LitElement {
         if(isModifier) return null;
     
         const map={ArrowUp:'Up',ArrowDown:'Down',ArrowLeft:'Left',ArrowRight:'Right',' ':'Space'};
-        parts.push(e.key.length===1? e.key.toUpperCase() : (map[e.key]||e.key));
+        // Read letters and digits from the physical key: with Option/Alt held, macOS
+        // reports the composed character (Alt+S is "ß"), not the key that was pressed.
+        const physical = /^Key([A-Z])$/.exec(e.code || '') || /^Digit([0-9])$/.exec(e.code || '');
+        parts.push(physical ? physical[1] : e.key.length===1? e.key.toUpperCase() : (map[e.key]||e.key));
         const accel=parts.join('+');
     
         /* ---- validation ---- */
         if(parts.length===1)   return {error:'Invalid shortcut: needs a modifier'};
         if(parts.length>4)     return {error:'Invalid shortcut: max 4 keys'};
         if(commonSystemShortcuts.has(accel)) return {error:'Invalid shortcut: system reserved'};
+        const takenBy = Object.keys(this.shortcuts).find(k => k !== this.capturingKey && this.shortcuts[k] === accel);
+        if(takenBy) return {error:`Already used by ${this.formatShortcutName(takenBy)}`};
         return {accel};
       }
 

@@ -361,6 +361,12 @@ async function handleWindowVisibilityRequest(windowPool, layoutManager, movement
     }
 
     if (name === 'script') {
+        // The Script shortcuts are registered only while the window is open; re-register
+        // on every change, unless the shortcut editor holds them off.
+        const refreshShortcuts = () => {
+            const editor = windowPool.get('shortcut-settings');
+            if (!(editor && !editor.isDestroyed() && editor.isVisible())) internalBridge.emit('reregister-shortcuts');
+        };
         if (shouldBeVisible) {
             // Open under the header the first time; after that it stays where the user put it.
             if (!win.__placed) {
@@ -371,8 +377,15 @@ async function handleWindowVisibilityRequest(windowPool, layoutManager, movement
             win.setOpacity(0);
             win.show();
             movementManager.fade(win, { to: 1 });
+            refreshShortcuts();
         } else {
-            movementManager.fade(win, { to: 0, onComplete: () => win.hide() });
+            movementManager.fade(win, {
+                to: 0,
+                onComplete: () => {
+                    win.hide();
+                    refreshShortcuts();
+                },
+            });
         }
         return;
     }

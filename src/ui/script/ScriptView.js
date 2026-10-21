@@ -1125,17 +1125,20 @@ export class ScriptView extends LitElement {
         if (this.text) this._apply(this.name, this.text);
         this._mode = this.parsed && this.total ? 'player' : 'library';
         this._onKeydown = e => this._handleKeydown(e);
+        this._onShortcut = (_event, shortcut) => this._handleShortcut(shortcut);
     }
 
     connectedCallback() {
         super.connectedCallback();
         window.addEventListener('keydown', this._onKeydown);
+        if (window.api) window.api.scriptView.onShortcut(this._onShortcut);
         this._startScroller();
     }
 
     disconnectedCallback() {
         super.disconnectedCallback();
         window.removeEventListener('keydown', this._onKeydown);
+        if (window.api) window.api.scriptView.removeOnShortcut(this._onShortcut);
         this._stopTicker();
         this._stopScroller();
     }
@@ -1454,6 +1457,23 @@ export class ScriptView extends LitElement {
         }
     }
 
+    /**
+     * Back / forward, as the edge buttons, ←/→ and the global Script shortcuts all do it:
+     * a scene on the slide, a beat while Steps is open or on Scroll.
+     */
+    go(delta) {
+        if (this.view === 'slide' && !this.stepsOpen) this.stepScene(delta);
+        else this.stepBeat(delta);
+    }
+
+    /** A global Script shortcut from Glass's shortcut settings (works while another app has focus). */
+    _handleShortcut(shortcut) {
+        if (this._mode !== 'player' || !this.total) return;
+        if (shortcut === 'previous') this.go(-1);
+        else if (shortcut === 'next') this.go(1);
+        else if (shortcut === 'toggleSteps') this.setStepsOpen(!this.stepsOpen);
+    }
+
     /** The viewer's keys: Space, ←/→, ↑/↓ (Steps), S, R, Esc, N, A, O, +/−. */
     _handleKeydown(e) {
         if (this._mode !== 'player') return;
@@ -1468,9 +1488,7 @@ export class ScriptView extends LitElement {
             this.togglePlay();
         } else if (key === 'ArrowRight' || key === 'ArrowLeft') {
             handled();
-            const d = key === 'ArrowRight' ? 1 : -1;
-            if (this.view === 'slide' && !this.stepsOpen) this.stepScene(d);
-            else this.stepBeat(d);
+            this.go(key === 'ArrowRight' ? 1 : -1);
         } else if ((key === 'ArrowDown' || key === 'ArrowUp') && (this.stepsOpen || this.view === 'scroll')) {
             handled();
             this.stepBeat(key === 'ArrowDown' ? 1 : -1);
@@ -1695,6 +1713,10 @@ export class ScriptView extends LitElement {
                               <div class="note">
                                   Space start/pause · ←/→ scene (beat on Scroll and in Steps) · S steps · R reference · N jump to now · A auto · O
                                   slide/scroll · +/− text size
+                              </div>
+                              <div class="note">
+                                  From any app while this window is open: ⌘⌥← previous · ⌘⌥→ next · ⌘⌥S steps (Ctrl+Alt on Windows). Change them in
+                                  Settings → Edit Shortcuts.
                               </div>
                           </div>
                       `
@@ -1924,7 +1946,7 @@ export class ScriptView extends LitElement {
         const at = byBeat ? this._currentFlatIndex(this.time) : sceneAt;
         const last = byBeat ? this.flat.length - 1 : sceneCount - 1;
         const what = byBeat ? 'beat' : 'scene';
-        const go = d => (byBeat ? this.stepBeat(d) : this.stepScene(d));
+        const go = d => this.go(d);
         return html`
             ${at > 0
                 ? html`<button class="st-zone prev" title="Previous ${what} (←)" aria-label="Previous ${what}" @click=${() => go(-1)}>
